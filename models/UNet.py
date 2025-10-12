@@ -86,10 +86,10 @@ class ConvUpblock(nn.Module):
         """
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
-        self.upsample_mode = upsample_mode
+        self.upsampler = nn.Upsample(2,mode = upsample_mode)
         self.block = nn.Sequential( 
-            nn.GroupNorm(self.group_norm_size,in_channels+self.d_concat),
-            nn.Conv2d(in_channels+self.d_concat,out_channels,kernel_size=3,padding=1,stride=1,bias=False),
+            nn.GroupNorm(self.group_norm_size,2*in_channels+self.d_concat),
+            nn.Conv2d(2*in_channels+self.d_concat,out_channels,kernel_size=3,padding=1,stride=1,bias=False),
             nn.SiLU(),
             nn.GroupNorm(self.group_norm_size,out_channels),
             nn.Conv2d(out_channels,out_channels,kernel_size=3,stride=2,padding=1,bias=False),
@@ -103,14 +103,42 @@ class ConvUpblock(nn.Module):
         Then reshape -> (B,d_concat,1,1)
         Then expand -> (B,d_concat,H,W)
         """
-        x = nn.Upsample(size = 2, mode = self.upsample_mode)
+        # Upsample x
+        x = self.upsampler(x)
+        # Get time embeddings
         time_emb = self.time_emb_mlp(time_emb)[:,:,None,None] 
         time_emb = time_emb.expand(-1, -1, x.size(2), x.size(3))
+        # Concat x, skip features and time embeddings
         x = torch.cat([x,skip_features,time_emb],dim=1)
+        # Pass through block
         return self.block(x)
+    
+
+class Encoder(nn.Module): 
+    def __init__(self,channels:List[int],d_trunk,d_concat):
+        """
+        For each channel create DownConvblock with in_channels = channel[i] and out_channels = channels[i+1]
+        """
+        self.blocks = nn.ModuleList([
+            ConvDownblock(
+                in_channels, 
+                out_channels,
+                d_trunk,
+                d_concat,
+            )
+            for in_channels,out_channels in zip(channels[:-1],channels[1:])
+        ])
+
+class Decoder(nn.Module):
+    def __init__(self,channels:List[int]):
+        pass
+
+class Bottleneck(nn.Module): 
+    pass
+
 
 class Unet(nn.Module):
-    def __init__(self,in_channels:List[int],device = None):
+    def __init__(self,channels:List[int],device = None):
         self.encoder = None
         self.decoder = None
         self.bottleneck = None
