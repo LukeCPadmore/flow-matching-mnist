@@ -1,31 +1,41 @@
 import torch
 import os
+import math
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
-import torch.optim 
+import random
 import mlflow
 from tqdm import tqdm 
 
 from models.ode_solvers import euler_solver, rk2_solver, create_samples
 
 def flow_matching_step(model,x1,loss_fn,device):
+    B = x1.shape[0]
     x1 = x1.to(device)
     x0 = torch.randn_like(x1).to(device)
-    B = x1.shape[0]
     t = torch.rand(B,1,1,1).to(device)
     v_est = model((1-t) * x0 + x1 * t,t)
     v_true = x1 - x0
     mse = loss_fn(v_est,v_true)
-    return mse
+    return mse 
 
-def save_sample_grid(images, nrow, filepath, normalize = True, artifact_subdir = 'images'):
-    grid = make_grid(images, nrow = nrow, normalize = normalize, value_range=(-1, 1))
-    os.makedirs(artifact_subdir,exist_ok=True)
-    out_path = os.path.join(artifact_subdir,filepath)
-    save_image(grid,out_path)
-    mlflow.log_artifact(out_path,artifact_path = artifact_subdir)
+def flow_matching_step_cfg(model, x1, y, p_drop, NULL_ID, loss_fn, device):
+    B = x1.shape[0]
+    x1 = x1.to(device)
+    y = y.to(device)
 
+    x0 = torch.randn_like(x1).to(device)
+    t = torch.rand(B,1,1,1).to(device)
+
+    drop_mask = (torch.rand_like(y.float()) < p_drop)
+    y_drop = y.clone() 
+    y_drop[drop_mask] = NULL_ID
+    
+    v_est = model((1-t) * x0 + x1 * t,t,y_drop)
+    v_true = x1 - x0
+    mse = loss_fn(v_est,v_true)
+    return mse 
 
 def train_loop(
     model,
@@ -62,7 +72,7 @@ def train_loop(
         for epoch in tqdm(range(num_epochs)):
             model.train()
             running_loss = 0.0
-            for i,(x1,_) in enumerate(dataloader):
+            for i,(x1,c) in enumerate(dataloader):
                 optim.zero_grad()
                 mse = flow_matching_step(model,x1,loss_fn,device)
                 mse.backward() 

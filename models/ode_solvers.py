@@ -36,28 +36,51 @@ def rk2_solver(f, x0, t0: float, t1: float, n_steps: int):
     return xs, ts
 
 
-def vf_learned(model):
-    """Wrapper to handle scalar t values."""
+def make_vf_uncond(model):
     model.eval()
-    def f(x, t: float):
-        t_tensor = torch.full(
-            (x.shape[0], 1, 1, 1),
-            fill_value=t,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        return model(x, t_tensor)
+    def f(x, t_scalar: float):
+        t = torch.full((x.size(0), 1, 1, 1), t_scalar, device=x.device, dtype=x.dtype)
+        return model(x, t)                           # no condition
     return f
+
+def make_vf_cond(model, y):
+    model.eval()
+    y = y.to(next(model.parameters()).device)
+    def f(x, t_scalar: float):
+        t = torch.full((x.size(0), 1, 1, 1), t_scalar, device=x.device, dtype=x.dtype)
+        return model(x, t, y)
+    return f
+
+def make_vf_cfg(model, y, w, NULL_ID):
+    model.eval()
+    device = next(model.parameters()).device
+    y = y.to(device)                                
+    y_null = torch.full_like(y, NULL_ID, device=device)
+
+    def f(x, t_scalar: float):
+        B = x.size(0)
+        t = torch.full((B, 1, 1, 1), t_scalar, device=x.device, dtype=x.dtype)
+
+        # Batch cond + uncond in one forward
+        x2 = torch.cat([x, x], dim=0)
+        t2 = torch.cat([t, t], dim=0)
+        y2 = torch.cat([y, y_null], dim=0)
+
+        v2 = model(x2, t2, y2)                     
+        v_cond, v_uncond = v2[:B], v2[B:]
+        return v_uncond + w * (v_cond - v_uncond)
+    return f
+
 
 
 def create_samples(
     n_images: int,
     image_shape,         # (C, H, W)
     ode_solver,
-    model,
+    f,
     n_steps: int,
     return_all: bool = False,
-    device=None,
+    device = None,
     seed: int | None = None,
     clamp_mode: str | None = "clamp",   # "clamp", "tanh", or None
     clamp_range: tuple[float, float] = (-1.0, 1.0),
@@ -68,11 +91,6 @@ def create_samples(
       - if return_all=False: Tensor (B, C, H, W) at final time
       - if return_all=True:  list[Tensor] trajectory over time
     """
-    model.eval()
-    if device is None:
-        device = next(model.parameters()).device
-
-    f = vf_learned(model)
 
     g = None
     if seed is not None:
