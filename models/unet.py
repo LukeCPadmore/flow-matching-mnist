@@ -40,12 +40,13 @@ class SinusoidalTimeEmbedding(nn.Module):
         time_embeddings = self._sinusoidal_time_embedding(t)
         return self.mlp(time_embeddings)
     
-class SimpleConditioning(nn.Module):
+class SimpleClassConditioning(nn.Module):
     def __init__(self,cls_dim, embedding_dim, trunk_dim):
+        super().__init__()
         self.cond_emb = nn.Embedding(cls_dim,embedding_dim)
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim,trunk_dim),
-            nn.Silu(),
+            nn.SiLU(),
             nn.Linear(trunk_dim,trunk_dim)
         )
     def forward(self,cls_idx):
@@ -160,7 +161,7 @@ class Encoder(nn.Module):
         """
         Loop through downblocks and save output tensors to skip_features to later pass to decoder
         """
-        skip_features = []
+        skip_features = [] 
         x = self.initial_conv(x)
         for block in self.down_blocks:
             x, x_skip_features = block(x,time_emb)
@@ -231,10 +232,10 @@ class UNet(nn.Module):
     def __init__(self,channels:list[int],d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128):
         super().__init__()
         self.channels = channels
-        self.encoder = Encoder(channels,d_trunk,d_concat,group_norm_size)
-        self.decoder = Decoder(channels,d_trunk,d_concat,group_norm_size)
-        self.bottleneck = Bottleneck(self.channels[-1],d_trunk,d_concat,group_norm_size)
-        self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
+        self.encoder = Encoder(channels,d_trunk, d_concat, group_norm_size)
+        self.decoder = Decoder(channels,d_trunk, d_concat, group_norm_size)
+        self.bottleneck = Bottleneck(self.channels[-1],d_trunk,2 * d_concat,group_norm_size)
+        self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk, 2 * d_concat)
 
     def forward(self,x,t) -> torch.Tensor:
         time_emb = self.time_embedding_mlp(t)
@@ -244,14 +245,15 @@ class UNet(nn.Module):
         return x
 
 class CondUNet(nn.Module):
-    def __init__(self,channels:list[int], cls_cond_dim, d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128):
+    def __init__(self,channels:list[int], cond_dim, d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128, d_cls_emb = 128):
         super().__init__()
+        # 2 * trunk for individual ConvBlock MLP dimensions as coming from time embedding and class embedding
         self.channels = channels
-        self.encoder = Encoder(channels,d_trunk,d_concat,group_norm_size)
-        self.decoder = Decoder(channels,d_trunk,d_concat,group_norm_size)
-        self.bottleneck = Bottleneck(self.channels[-1],d_trunk,d_concat,group_norm_size)
+        self.encoder = Encoder(channels,2 * d_trunk, d_concat,group_norm_size)
+        self.decoder = Decoder(channels,2 * d_trunk, d_concat,group_norm_size)
+        self.bottleneck = Bottleneck(self.channels[-1],2 * d_trunk, d_concat,group_norm_size)
         self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
-        self.simple_cond_mlp = SimpleConditioning(cls_cond_dim,d_trunk)
+        self.simple_cond_mlp = SimpleClassConditioning(cond_dim, d_cls_emb , d_trunk)
 
     def forward(self,x,t,c) -> torch.Tensor:
         cond_emb = self.simple_cond_mlp(c)

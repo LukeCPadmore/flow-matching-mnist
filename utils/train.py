@@ -77,7 +77,6 @@ def train_loop(
                 mse = flow_matching_step(model,x1,loss_fn,device)
                 mse.backward() 
                 optim.step()
-
                 running_loss += mse.item()
 
                 if global_step % log_every_step == 0:
@@ -93,6 +92,10 @@ def train_loop(
         for i,x in enumerate(samples):
             save_sample_grid(x, sample_grid_size, f'final_sample_ode_step_{i}.png',
                             artifact_subdir='images/train') 
+        
+        # TODO implement
+        if save_model:
+            pass 
     return model
         
 
