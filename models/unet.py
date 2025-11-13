@@ -237,7 +237,7 @@ class UNet(nn.Module):
         self.bottleneck = Bottleneck(self.channels[-1],d_trunk,2 * d_concat,group_norm_size)
         self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk, 2 * d_concat)
 
-    def forward(self,x,t) -> torch.Tensor:
+    def forward(self,x,t,*args, **kwargs) -> torch.Tensor:
         time_emb = self.time_embedding_mlp(t)
         x, skip_features = self.encoder(x,time_emb)
         x = self.bottleneck(x,time_emb)
@@ -255,7 +255,7 @@ class CondUNet(nn.Module):
         self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
         self.simple_cond_mlp = SimpleClassConditioning(cond_dim, d_cls_emb , d_trunk)
 
-    def forward(self,x,t,c) -> torch.Tensor:
+    def forward(self,x,t,c,*args,**kwargs) -> torch.Tensor:
         cond_emb = self.simple_cond_mlp(c)
         time_emb = self.time_embedding_mlp(t)
         combined_emb = torch.cat([cond_emb,time_emb], dim = 1)
