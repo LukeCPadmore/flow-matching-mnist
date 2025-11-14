@@ -254,7 +254,7 @@ class CondUNet(nn.Module):
         self.bottleneck = Bottleneck(self.channels[-1],2 * d_trunk, d_concat,group_norm_size)
         self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
         self.simple_cond_mlp = SimpleClassConditioning(cond_dim, d_cls_emb , d_trunk)
-
+    
     def forward(self,x,t,c,*args,**kwargs) -> torch.Tensor:
         cond_emb = self.simple_cond_mlp(c)
         time_emb = self.time_embedding_mlp(t)

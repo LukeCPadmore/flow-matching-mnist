@@ -9,6 +9,7 @@ import mlflow
 import os
 from tqdm import tqdm 
 import mlflow.pytorch
+from datetime import datetime
 
 from models.ode_solvers import euler_solver, rk2_solver, create_samples, make_vf_uncond, make_vf_cfg
 
@@ -56,8 +57,9 @@ def save_sample_grid(samples,grid_size,file_name,artifact_subdir = None) -> None
 
     return out_path
 
-def train_loop_UNet(
+def train_loop_uncond(
     model,
+    optim,
     dataloader: DataLoader,
     num_epochs: int = 10,
     lr: float = 1e-3,
@@ -75,8 +77,13 @@ def train_loop_UNet(
     mlflow.set_experiment("flow-matching-mnist")
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
-    BATCH_SIZE, *IMAGE_SHAPE = next(iter(dataloader))[0].shape 
+    images, labels = next(iter(dataloader))
+    BATCH_SIZE, *IMAGE_SHAPE = images.shape
     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
+    input_example = {
+        "x" : torch.randn(1,*IMAGE_SHAPE),
+        "t" : torch.zeros(1,1,1,1)
+    }
     with mlflow.start_run(run_name = run_name) as run: 
         mlflow.log_params({
             "lr":lr,
@@ -108,7 +115,7 @@ def train_loop_UNet(
                 mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
                 # Create callback for velocity field
                 f = make_vf_uncond(model)
-                samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0)
+                samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
                 path = save_sample_grid(samples, sample_grid_size, f'epoch_{epoch:03d}.png', artifact_subdir="images/train")
                 mlflow.log_artifact(path,artifact_path = 'samples')
 
@@ -116,7 +123,7 @@ def train_loop_UNet(
         
          # Create callback for velocity field
         f = make_vf_uncond(model)
-        samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0)
+        samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0,device=device)
         for i,x in enumerate(samples):
             save_sample_grid(x, sample_grid_size, f'final_sample_ode_step_{i}.png',
                             artifact_subdir='images/train') 
@@ -128,7 +135,8 @@ def train_loop_UNet(
             model_info = mlflow.pytorch.log_model(
                 model,
                 name = 'UNet', 
-                register_model_name = register_model_name
+                register_model_name = register_model_name,
+                input_example = input_example
             )
     return model_info
         
@@ -144,19 +152,27 @@ def train_loop_cfg(
     log_every_step: int = 1,
     log_every_epoch: int = 10,
     sample_steps:int = 50,
-    run_name: str = 'mnist-fm-cond-unet',
+    experiment_name: str = 'mnist-fm-cond-unet',
+    run_name:str = None,
     device: str = 'cuda',
     sample_grid_size = 8,
     ode_solver = euler_solver,
     ode_steps = 50,
-    save_model = True,
-    register_model_name = None):
+    save_model = True):
 
-    mlflow.set_experiment("cond-flow-matching-mnist")
+    mlflow.set_experiment(experiment_name)
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
-    BATCH_SIZE, *IMAGE_SHAPE = next(iter(dataloader))[0].shape 
+    images, labels = next(iter(dataloader))
+    BATCH_SIZE, *IMAGE_SHAPE = images.shape
     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
+    input_example = {
+        "x" : torch.randn(1,*IMAGE_SHAPE),
+        "t" : torch.zeros(1,1,1,1),
+        "y" : torch.tensor([0], dtype = labels.dtype)
+    }
+    
+    run_name = f'{run_name if run_name else experiment_name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
     with mlflow.start_run(run_name = run_name) as run: 
         mlflow.log_params({
             "lr":lr,
@@ -175,7 +191,7 @@ def train_loop_cfg(
         for epoch in tqdm(range(num_epochs)):
             model.train()
             running_loss = 0.0
-            for i,(x1,c) in enumerate(dataloader):
+            for i, (x1,c) in enumerate(dataloader):
                 optim.zero_grad()
                 mse = flow_matching_step_cfg(model,x1,c,p_drop,NULL_ID,loss_fn,device)
                 mse.backward() 
@@ -189,12 +205,12 @@ def train_loop_cfg(
             if epoch % log_every_epoch == 0:
                 f = make_vf_cfg(model,conditional_sampling_grid_labels,w,num_epochs)
                 mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
-                samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0)
+                samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
                 path = save_sample_grid(samples, sample_grid_size, f'epoch_{epoch:03d}.png', artifact_subdir="images/train")
                 mlflow.log_artifact(path,artifact_path = 'samples')
 
         f = make_vf_cfg(model,conditional_sampling_grid_labels,w,num_epochs)
-        samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0)
+        samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0, device=device)
         for i,x in enumerate(samples):
             save_sample_grid(x, sample_grid_size, f'final_sample_ode_step_{i}.png',
                             artifact_subdir='images/train') 
@@ -204,9 +220,8 @@ def train_loop_cfg(
         if save_model:
             model_info = mlflow.pytorch.log_model(
                 model,
-                name = 'CondUNet', 
-                register_model_name = register_model_name
-            )
+                artifact_path = 'models',
+                input_example = input_example)
     return model_info
     
 
