@@ -81,8 +81,8 @@ def train_loop_uncond(
     BATCH_SIZE, *IMAGE_SHAPE = images.shape
     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
     input_example = {
-        "x" : torch.randn(1,*IMAGE_SHAPE),
-        "t" : torch.zeros(1,1,1,1)
+        "x": torch.randn(1, *IMAGE_SHAPE).cpu().numpy(),
+        "t": torch.zeros(1, 1, 1, 1).cpu().numpy(),
     }
     with mlflow.start_run(run_name = run_name) as run: 
         mlflow.log_params({
@@ -167,9 +167,9 @@ def train_loop_cfg(
     BATCH_SIZE, *IMAGE_SHAPE = images.shape
     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
     input_example = {
-        "x" : torch.randn(1,*IMAGE_SHAPE),
-        "t" : torch.zeros(1,1,1,1),
-        "y" : torch.tensor([0], dtype = labels.dtype)
+        "x" : torch.randn(1,*IMAGE_SHAPE).cpu().numpy(),
+        "t" : torch.zeros(1,1,1,1).cpu().numpy(),
+        "y" : torch.tensor([0], dtype = labels.dtype).cpu().numpy()
     }
     
     run_name = f'{run_name if run_name else experiment_name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
@@ -221,7 +221,8 @@ def train_loop_cfg(
             model_info = mlflow.pytorch.log_model(
                 model,
                 artifact_path = 'models',
-                input_example = input_example)
+                #input_example = input_example
+                )
     return model_info
     
 
