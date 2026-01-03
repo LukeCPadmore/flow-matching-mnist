@@ -1,16 +1,17 @@
 import torch.nn as nn
-from torch.utils.data import Dataloader
+from torch.utils.data import DataLoader
 import torch.optim 
 import torch
 from tqdm import tqdm 
 import mlflow
-from .fid_model import FID_classifier
+from utils.FID.fid_model import FID_classifier
 from datetime import datetime
 import numpy as np
-import os, tempfile
+from utils.logger_utils import get_temp_logger
+import os, tempfile, shutil
 
 
-def compute_fid_stats(backbone: nn.Module,testloader:Dataloader): 
+def compute_fid_stats(backbone: nn.Module,testloader:DataLoader): 
     device = next(backbone.parameters()).device
     backbone.eval()
     embs = []
@@ -22,7 +23,7 @@ def compute_fid_stats(backbone: nn.Module,testloader:Dataloader):
             x = x.to(device)
             # Collect embeddings
             pred = backbone(x)
-            embs.append(embs.append(pred.detach().cpu()))
+            embs.append(pred.detach().cpu())
         embs = np.concatenate(embs, axis=0)
 
     mu = embs.mean(axis=0)
@@ -32,8 +33,8 @@ def compute_fid_stats(backbone: nn.Module,testloader:Dataloader):
 
 def create_fid_backbone(fid_classifier) -> nn.Module:
     convs, clf = fid_classifier.children()
-    clf_no_head = nn.Sequential([*clf.children()][:-1])
-    fid_backbone = nn.Squential(
+    clf_no_head = nn.Sequential(*list(clf.children())[:-1])
+    fid_backbone = nn.Sequential(
         convs, 
         clf_no_head
     )
@@ -51,13 +52,22 @@ def train(
     optim = torch.optim.AdamW(model.parameters(),lr = lr)
     loss_fn = nn.CrossEntropyLoss()
     run_name = "FID_Classifier_Training" "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    with mlflow.start_run(run_name = run_name):
-        mlflow.log_param("num_epochs", num_epochs)
-        mlflow.log_param("lr",lr)
-        mlflow.log_param("conv_block_size", model.conv_block_channels)
-        mlflow.log_param("n_classes",model.n_classes)
-        mlflow.log_param("fid_embed", model.fid_emb)
-        for epoch in tqdm(range(num_epochs)):
+
+    with mlflow.start_run(run_name = run_name) as run:
+        logger_name = f"fid_{run.info.run_id}"
+        logger, log_path = get_temp_logger(logger_name)
+
+        params = {
+            "num_epochs": num_epochs,
+            "lr": lr,
+            "conv_block_size": model.conv_block_channels,
+            "n_classes": model.n_classes,
+            "fid_embed": model.fid_emb
+        }
+        mlflow.log_params(params)
+
+        logger.info("Hyperparameters:\n" + "\n".join(f" {k}: {v}" for k, v in params.items()))
+        for epoch in tqdm(range(num_epochs),desc="Training"):
             model.train()
             running_loss = 0.0
             for i,(x,y) in enumerate(trainloader):
@@ -70,6 +80,7 @@ def train(
                 optim.step()
                 running_loss += loss.item()
             mlflow.log_metric("Cross_entropy_epoch", running_loss / len(trainloader), step = epoch)
+            logger.info(f"Epoch [{epoch+1}/{num_epochs}] | Loss: {running_loss:.4f}")
 
             # Test validation accuracy
             if epoch % val_acc_every == 0: 
@@ -84,8 +95,11 @@ def train(
                     correct += torch.sum(preds == y).item()
                     total += y.size(0)
                 accuracy = correct / total
-                mlflow.log_metric("Val_acc",accuracy)
-        
+                mlflow.log_metric("Val_acc",accuracy, step = epoch)
+                logger.info(
+                    f"Epoch [{epoch+1}/{num_epochs}] | Val accuracy (periodic): {accuracy:.4f}"
+                )
+        logger.info("Training complete, computing final validate accuracy")
         # Compute validation accuracy for reporting
         model.eval()
         correct = 0
@@ -98,13 +112,15 @@ def train(
             correct += torch.sum(preds == y).item()
             total += y.size(0)
         accuracy = correct / total
+
+        logger.info("Saving artifacts and computing FID")
         mlflow.log_metric("Val_acc_final",accuracy)
         mlflow.pytorch.log_model(model, 
-                                 model="fid_classifier")
+                                 name="fid_classifier")
         
         # Create backbone and log
         backbone = create_fid_backbone(model)
-        mlflow.pytorch.log_model(backbone, model="fid_backbone")
+        mlflow.pytorch.log_model(backbone, name="fid_backbone")
 
         # Create fid stats and save artifacts
         mu, sigma = compute_fid_stats(backbone,valloader)
@@ -113,6 +129,9 @@ def train(
             np.savez(stats_path, mu=mu, sigma=sigma)
             mlflow.log_artifact(stats_path, artifact_path="fid_stats")
 
+        mlflow.log_artifact(log_path, artifact_path="logs")
+        tmpdir = os.path.dirname(log_path)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 if __name__ == "__main__":
-    train()
+    pass
