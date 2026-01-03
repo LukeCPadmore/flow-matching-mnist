@@ -4,6 +4,7 @@ import math
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
+from torchvision.transforms.functional import to_pil_image
 import random
 import mlflow
 import os
@@ -40,22 +41,16 @@ def flow_matching_step_cfg(model, x1, y, p_drop, NULL_ID, loss_fn, device):
     mse = loss_fn(v_est,v_true)
     return mse 
 
-def save_sample_grid(samples,grid_size,file_name,artifact_subdir = None) -> None:
-    if samples.min() < 0:
-        samples = (samples + 1) / 2 
+def create_pil_image(images: torch.Tensor, nrow: int = 8):
+    images = images.detach().cpu()
+    if images.min() < 0:
+        images = (images + 1) / 2
+    images = images.clamp(0, 1)
 
-    samples = samples.clamp(0, 1)
+    grid = make_grid(images, nrow=nrow)
+    img = to_pil_image(grid)  # PIL.Image
 
-    # Make grid
-    grid = make_grid(samples, nrow=grid_size, padding=2)
-
-    # Build full path
-    out_dir = artifact_subdir or "."
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, file_name)
-    save_image(grid, out_path)
-
-    return out_path
+    return img
 
 def train_loop_uncond(
     model,
@@ -116,18 +111,15 @@ def train_loop_uncond(
                 # Create callback for velocity field
                 f = make_vf_uncond(model)
                 samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
-                path = save_sample_grid(samples, sample_grid_size, f'epoch_{epoch:03d}.png', artifact_subdir="images/train")
-                mlflow.log_artifact(path,artifact_path = 'samples')
-
-        # Create samples with all time steps and save
+                img = create_pil_image(samples)
+                mlflow.log_image(img,artifact_file=f"train_grids/samples_epoch_{epoch:04d}.png")
         
          # Create callback for velocity field
         f = make_vf_uncond(model)
         samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0,device=device)
         for i,x in enumerate(samples):
-            save_sample_grid(x, sample_grid_size, f'final_sample_ode_step_{i}.png',
-                            artifact_subdir='images/train') 
-            mlflow.log_artifact(path,artifact_path = 'images')
+            img = create_pil_image(x)
+            mlflow.log_image(img,artifact_file=f"train_grids/final_sample_ode_step_{i}.png")
 
         # Save model
         model_info = None
@@ -206,15 +198,14 @@ def train_loop_cfg(
                 f = make_vf_cfg(model,conditional_sampling_grid_labels,w,num_epochs)
                 mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
                 samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
-                path = save_sample_grid(samples, sample_grid_size, f'epoch_{epoch:03d}.png', artifact_subdir="images/train")
-                mlflow.log_artifact(path,artifact_path = 'samples')
+                img = create_pil_image(samples)
+                mlflow.log_image(img,artifact_file=f"train_grids/samples_epoch_{epoch:04d}.png")
 
         f = make_vf_cfg(model,conditional_sampling_grid_labels,w,num_epochs)
         samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0, device=device)
         for i,x in enumerate(samples):
-            save_sample_grid(x, sample_grid_size, f'final_sample_ode_step_{i}.png',
-                            artifact_subdir='images/train') 
-            mlflow.log_artifact(path,artifact_path = 'images')
+            img = create_pil_image(x)
+            mlflow.log_image(img,artifact_file=f"train_grids/final_sample_ode_step_{i}.png")
             
         model_info = None
         if save_model:

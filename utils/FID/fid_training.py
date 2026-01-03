@@ -118,16 +118,22 @@ def train(
         mlflow.pytorch.log_model(model, 
                                  name="fid_classifier")
         
-        # Create backbone and log
+        # Create backbone and log stats with it
         backbone = create_fid_backbone(model)
-        mlflow.pytorch.log_model(backbone, name="fid_backbone")
 
         # Create fid stats and save artifacts
         mu, sigma = compute_fid_stats(backbone,valloader)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             stats_path = os.path.join(tmpdir, "real_stats.npz")
             np.savez(stats_path, mu=mu, sigma=sigma)
-            mlflow.log_artifact(stats_path, artifact_path="fid_stats")
+
+            # Log backbone and bundle stats with the model
+            mlflow.pytorch.log_model(
+                backbone,
+                artifact_path="fid_backbone",
+                extra_files=[stats_path],
+            )
 
         mlflow.log_artifact(log_path, artifact_path="logs")
         tmpdir = os.path.dirname(log_path)
