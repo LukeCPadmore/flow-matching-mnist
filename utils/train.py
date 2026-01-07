@@ -1,5 +1,5 @@
 import torch
-import os
+import os, shutil
 import math
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -11,7 +11,7 @@ import os
 from tqdm import tqdm 
 import mlflow.pytorch
 from datetime import datetime
-
+from utils.logger_utils import get_temp_logger
 from models.ode_solvers import euler_solver, rk2_solver, create_samples, make_vf_uncond, make_vf_cfg
 
 def flow_matching_step(model,x1,loss_fn,device):
@@ -48,47 +48,47 @@ def create_pil_image(images: torch.Tensor, nrow: int = 8):
     images = images.clamp(0, 1)
 
     grid = make_grid(images, nrow=nrow)
-    img = to_pil_image(grid)  # PIL.Image
+    # Create PIL image
+    img = to_pil_image(grid) 
 
     return img
 
 def train_loop_uncond(
     model,
-    optim,
     dataloader: DataLoader,
     num_epochs: int = 10,
     lr: float = 1e-3,
-    log_every_step: int = 1,
+    log_every_step: int = 100,
     log_every_epoch: int = 10,
     sample_steps:int = 50,
-    run_name: str = 'mnist-fm-unet',
+    run_name_prefix: str = 'MNIST-FM-Uncond',
     device: str = 'cuda',
     sample_grid_size = 8,
     ode_solver = euler_solver,
-    ode_steps = 50,
-    save_model = True,
-    register_model_name = None):
+    ode_steps = 50):
 
-    mlflow.set_experiment("flow-matching-mnist")
+    mlflow.set_experiment("Flow Matching Mnist Unconditional")
+    logger, log_path = get_temp_logger("train_uncond")
+    run_name = run_name_prefix + datetime.now().strftime("-%Y-%m-%d_%H-%M-%S")
     optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
-    images, labels = next(iter(dataloader))
+    images, _ = next(iter(dataloader))
     BATCH_SIZE, *IMAGE_SHAPE = images.shape
     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
-    input_example = {
-        "x": torch.randn(1, *IMAGE_SHAPE).cpu().numpy(),
-        "t": torch.zeros(1, 1, 1, 1).cpu().numpy(),
-    }
-    with mlflow.start_run(run_name = run_name) as run: 
-        mlflow.log_params({
+    params = {
             "lr":lr,
             "epochs": num_epochs,
             "samples_steps": sample_steps,
             "model_params": sum(p.numel() for p in model.parameters()),
             "batch_size": BATCH_SIZE,
             "ode_steps": ode_steps,
-            "ode_solver": getattr(ode_solver, "__name__", str(ode_solver))
-        })
+            "ode_solver": getattr(ode_solver, "__name__", str(ode_solver)),
+            "image_shape": IMAGE_SHAPE
+        }
+    with mlflow.start_run(run_name = run_name) as run: 
+        logger.info("Starting unconditional training")  
+        mlflow.log_params(params)
+        logger.info("Hyperparameters:\n" + "\n".join(f" {k}: {v}" for k, v in params.items()))
         global_step = 0
         for epoch in tqdm(range(num_epochs)):
             model.train()
@@ -104,35 +104,37 @@ def train_loop_uncond(
 
                 if global_step % log_every_step == 0:
                     mlflow.log_metric("mse_step", mse.item(), step = global_step)
+                    logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] mse={mse.item() :.6f}")
                 global_step += 1
             # Sample batch of images
             if epoch % log_every_epoch == 0:
                 mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
                 # Create callback for velocity field
                 f = make_vf_uncond(model)
+                logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Creating sample images")
                 samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
                 img = create_pil_image(samples)
-                mlflow.log_image(img,artifact_file=f"train_grids/samples_epoch_{epoch:04d}.png")
+                logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Saving sample images")
+                mlflow.log_image(img,key="train_generated_samples", step = epoch)
+                
         
-         # Create callback for velocity field
+        
         f = make_vf_uncond(model)
         samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0,device=device)
         for i,x in enumerate(samples):
-            img = create_pil_image(x)
-            mlflow.log_image(img,artifact_file=f"train_grids/final_sample_ode_step_{i}.png")
-
-        # Save model
-        model_info = None
-        if save_model:
-            model_info = mlflow.pytorch.log_model(
-                model,
-                name = 'UNet', 
-                register_model_name = register_model_name,
-                input_example = input_example
-            )
+            img = create_pil_image(x,nrow=sample_grid_size)
+            mlflow.log_image(img,key="final_generated_samples", step = i)
+        logger.info("Saving model artifact")
+        model_info = mlflow.pytorch.log_model(
+            model,
+            name = 'UNet'
+        )
+        mlflow.log_artifact(log_path, artifact_path="logs")
+        tmpdir = os.path.dirname(log_path)
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return model_info
         
-
+# TODO: refactor
 def train_loop_cfg(
     model,
     dataloader: DataLoader,
@@ -165,6 +167,7 @@ def train_loop_cfg(
     }
     
     run_name = f'{run_name if run_name else experiment_name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
+    logger, log_path = get_temp_logger("train_cfg")
     with mlflow.start_run(run_name = run_name) as run: 
         mlflow.log_params({
             "lr":lr,
@@ -204,16 +207,18 @@ def train_loop_cfg(
         f = make_vf_cfg(model,conditional_sampling_grid_labels,w,num_epochs)
         samples = create_samples(NULL_ID * sample_grid_size, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0, device=device)
         for i,x in enumerate(samples):
-            img = create_pil_image(x)
-            mlflow.log_image(img,artifact_file=f"train_grids/final_sample_ode_step_{i}.png")
+            img = create_pil_image(x,nrow=sample_grid_size)
+            mlflow.log_image(img,artifact_file=f"final_grids/final_sample_ode_step_{i}.png")
             
         model_info = None
         if save_model:
             model_info = mlflow.pytorch.log_model(
                 model,
                 artifact_path = 'models',
-                #input_example = input_example
                 )
+        mlflow.log_artifact(log_path, artifact_path="logs")
+        tmpdir = os.path.dirname(log_path)
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return model_info
     
 

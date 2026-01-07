@@ -1,4 +1,5 @@
 import torch
+from typing import Callable
 
 @torch.no_grad()
 def euler_solver(f, x0, t0: float, t1: float, n_steps: int):
@@ -40,7 +41,7 @@ def make_vf_uncond(model):
     model.eval()
     def f(x, t_scalar: float):
         t = torch.full((x.size(0), 1, 1, 1), t_scalar, device=x.device, dtype=x.dtype)
-        return model(x, t)                           # no condition
+        return model(x, t)                          
     return f
 
 def make_vf_cond(model, y):
@@ -108,3 +109,17 @@ def create_samples(
         raise ValueError(f"Unknown clamp_mode: {clamp_mode}")
 
     return xs if return_all else xs[-1]
+
+
+ODE_SOLVERS: dict[str, Callable] = {
+    "euler_solver": euler_solver,
+    "rk2_solver": rk2_solver,
+}
+
+def get_ode_solver_from_name(name: str) -> Callable:
+    if name not in ODE_SOLVERS:
+        raise ValueError(
+            f"Unknown ode_solver '{name}'. "
+            f"Expected one of {list(ODE_SOLVERS.keys())}"
+        )
+    return ODE_SOLVERS[name]

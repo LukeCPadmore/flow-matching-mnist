@@ -2,7 +2,16 @@ import logging
 import tempfile
 import os
 from typing import Tuple
+from tqdm import tqdm
 
+class TqdmStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
 
 def get_temp_logger(name: str = "training") -> Tuple[logging.Logger, str]:
     """
@@ -25,7 +34,7 @@ def get_temp_logger(name: str = "training") -> Tuple[logging.Logger, str]:
         "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
     )
 
-    console = logging.StreamHandler()
+    console = TqdmStreamHandler()
     console.setFormatter(fmt)
 
     file_handler = logging.FileHandler(log_path)

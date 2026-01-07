@@ -2,7 +2,7 @@ import numpy as np
 from scipy.linalg import sqrtm 
 import mlflow
 import torch
-import Path 
+from pathlib import Path 
 
 def calc_fid(mu_real, sigma_real, mu_gen, sigma_gen, eps=1e-6) -> float:
 
@@ -54,24 +54,20 @@ def calc_fid(mu_real, sigma_real, mu_gen, sigma_gen, eps=1e-6) -> float:
 @torch.no_grad()
 def evaluate_fid_with_registered_backbone(
     *,
-    generator,
-    sample_fn,  # (generator, n, device) -> torch.Tensor
+    sample_fn,
+    device,
     backbone_uri: str = "models:/fid_backbone/latest", 
     stats_filename: str = "real_stats.npz",    
     n_samples: int = 5210,
-    batch_size: int = 128,
-    device: str = "cuda",
-    step: int | None = None,
-    log_to_mlflow = False
+    batch_size: int = 128
 ):
-    device = torch.device(device if (device != "cuda" or torch.cuda.is_available()) else "cpu")
 
     # load backbone model
     backbone = mlflow.pytorch.load_model(backbone_uri).to(device).eval()
 
     # load stats from bundled artifact
     model_dir = Path(mlflow.artifacts.download_artifacts(backbone_uri))
-    stats_path = model_dir / stats_filename
+    stats_path = model_dir / "extra_files"/ stats_filename
 
     if not stats_path.exists():
         raise FileNotFoundError(
@@ -88,11 +84,10 @@ def evaluate_fid_with_registered_backbone(
     remaining = n_samples
     while remaining > 0:
         b = min(batch_size, remaining)
-        imgs = sample_fn(generator, b, device=device)
+        imgs = sample_fn(b)
         if not torch.is_tensor(imgs):
             raise TypeError("sample_fn must return a torch.Tensor")
 
-        imgs = imgs.to(device)
         z = backbone(imgs)
         z = z.view(z.size(0), -1)  # ensure (B, D)
         embs.append(z.detach().cpu().numpy())
@@ -104,14 +99,5 @@ def evaluate_fid_with_registered_backbone(
 
     fid = calc_fid(mu_fake, sigma_fake, mu_real, sigma_real)
     
-    if log_to_mlflow:
-        mlflow.log_metric("fid", float(fid), step=step)
-        mlflow.log_params({
-            "fid_backbone_uri": backbone_uri,
-            "fid_n_samples": n_samples,
-            "fid_batch_size": batch_size,
-            "fid_stats_filename": stats_filename,
-        })
-
     return float(fid)
 
