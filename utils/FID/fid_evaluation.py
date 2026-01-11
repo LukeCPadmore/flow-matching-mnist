@@ -99,5 +99,5 @@ def evaluate_fid_with_registered_backbone(
 
     fid = calc_fid(mu_fake, sigma_fake, mu_real, sigma_real)
     
-    return float(fid)
+    return float(fid), embs
 
