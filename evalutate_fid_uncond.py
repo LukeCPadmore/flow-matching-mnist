@@ -12,16 +12,18 @@ from models.ode_solvers import get_ode_solver_from_name, make_vf_uncond, create_
 
 def run_eval(
     generator_run_id: str,
+    generator_name = "UNet",
     backbone_uri: str = "models:/fid_backbone/latest",
     stats_filename: str = "real_stats.npz",
     n_samples: int = 5210,
     device = "cuda",
     seed:int | None = None) -> None:
 
-    torch.manual_seed(seed)
+    if seed:
+        torch.manual_seed(seed)
     device = torch.device(device if (device != "cuda" or torch.cuda.is_available()) else "cpu")
 
-    generator = mlflow.pytorch.load_model(generator_run_id).to(device).eval()
+    generator = mlflow.pytorch.load_model(f"runs:/{generator_run_id}/{generator_name}").to(device).eval()
     ode_solver = get_ode_solver_from_name(get_run_param(generator_run_id,"ode_solver"))
     f = make_vf_uncond(generator)
     ode_solver = get_ode_solver_from_name(get_run_param(generator_run_id,"ode_solver"))
@@ -39,19 +41,15 @@ def run_eval(
         seed=None,
         device=device,
     )
-    
-    mlflow.set_experiment("")
-    with mlflow.start_run():
-        mlflow.log_params({
-            "n_samples": n_samples, 
-            "batch_size": batch_size,
-            "fid_backbone_uri": backbone_uri,
-            "seed": seed
-        })
+
+    run_name = f"fid::{generator_run_id[:8]}::{ode_solver.__name__}::{ode_steps}steps"
+    mlflow.set_experiment("FM-uncond-eval")
+    with mlflow.start_run(run_name = run_name):
+
         fid, embs = evaluate_fid_with_registered_backbone(
             sample_fn = sample_fn,
             device = device, 
-            n_sample = 128
+            n_samples = n_samples
         )
         mlflow.log_metric("fid", float(fid))
         mlflow.log_params({
@@ -59,11 +57,12 @@ def run_eval(
             "fid_n_samples": n_samples,
             "fid_batch_size": batch_size,
             "fid_stats_filename": stats_filename,
+            "seed": seed
         })
         with tempfile.TemporaryDirectory() as tmpdir:
             emb_path = os.path.join(tmpdir, "embeddings.npz")
-            np.savez(emb_path,embs)
-            mlflow.log_artifact(emb_path,embs)
+            np.savez(emb_path,embs=embs)
+            mlflow.log_artifact(emb_path)
         
 
 if __name__ == "__main__":

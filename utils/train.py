@@ -53,86 +53,157 @@ def create_pil_image(images: torch.Tensor, nrow: int = 8):
 
     return img
 
-def train_loop_uncond(
-    model,
-    dataloader: DataLoader,
-    num_epochs: int = 10,
-    lr: float = 1e-3,
-    log_every_step: int = 100,
-    log_every_epoch: int = 10,
-    sample_steps:int = 50,
-    run_name_prefix: str = 'MNIST-FM-Uncond',
-    device: str = 'cuda',
-    sample_grid_size = 8,
-    ode_solver = euler_solver,
-    ode_steps = 50):
+# Needs refactoring
+# def train_loop_uncond(
+#     model,
+#     dataloader: DataLoader,
+#     num_epochs: int = 10,
+#     lr: float = 1e-3,
+#     log_every_step: int = 100,
+#     log_every_epoch: int = 10,
+#     sample_steps:int = 50,
+#     run_name_prefix: str = 'FM-MNIST-Uncond',
+#     device: str = 'cuda',
 
-    mlflow.set_experiment("Flow Matching Mnist Unconditional")
-    logger, log_path = get_temp_logger("train_uncond")
-    run_name = run_name_prefix + datetime.now().strftime("-%Y-%m-%d_%H-%M-%S")
-    optim = torch.optim.AdamW(model.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
-    images, _ = next(iter(dataloader))
-    BATCH_SIZE, *IMAGE_SHAPE = images.shape
-    IMAGE_SHAPE = tuple(IMAGE_SHAPE)
-    params = {
-            "lr":lr,
-            "epochs": num_epochs,
-            "samples_steps": sample_steps,
-            "model_params": sum(p.numel() for p in model.parameters()),
-            "batch_size": BATCH_SIZE,
-            "ode_steps": ode_steps,
-            "ode_solver": getattr(ode_solver, "__name__", str(ode_solver)),
-            "image_shape": IMAGE_SHAPE
-        }
-    with mlflow.start_run(run_name = run_name) as run: 
-        logger.info("Starting unconditional training")  
-        mlflow.log_params(params)
-        logger.info("Hyperparameters:\n" + "\n".join(f" {k}: {v}" for k, v in params.items()))
-        global_step = 0
-        for epoch in tqdm(range(num_epochs)):
-            model.train()
-            running_loss = 0.0
-            # Loop over dataset
-            for i,(x1,_) in enumerate(dataloader):
-                optim.zero_grad()
-                # Generate esstimated velociy fields and compute MSE
-                mse = flow_matching_step(model,x1,loss_fn,device)
-                mse.backward() 
-                optim.step()
-                running_loss += mse.item()
+#     sample_grid_size = 8,
+#     ode_solver = euler_solver,
+#     ode_steps = 50):
 
-                if global_step % log_every_step == 0:
-                    mlflow.log_metric("mse_step", mse.item(), step = global_step)
-                    logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] mse={mse.item() :.6f}")
-                global_step += 1
-            # Sample batch of images
-            if epoch % log_every_epoch == 0:
-                mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
-                # Create callback for velocity field
-                f = make_vf_uncond(model)
-                logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Creating sample images")
-                samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
-                img = create_pil_image(samples)
-                logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Saving sample images")
-                mlflow.log_image(img,key="train_generated_samples", step = epoch)
+#     mlflow.set_experiment("Flow Matching MNIST Unconditional")
+#     logger, log_path = get_temp_logger("train_uncond")
+#     run_name = run_name_prefix + datetime.now().strftime("-%Y-%m-%d_%H-%M-%S")
+#     optim = torch.optim.AdamW(model.parameters(), lr=lr)
+#     loss_fn = nn.MSELoss()
+#     images, _ = next(iter(dataloader))
+#     BATCH_SIZE, *IMAGE_SHAPE = images.shape
+#     IMAGE_SHAPE = tuple(IMAGE_SHAPE)
+#     params = {
+#             "lr":lr,
+#             "epochs": num_epochs,
+#             "samples_steps": sample_steps,
+#             "model_params": sum(p.numel() for p in model.parameters()),
+#             "batch_size": BATCH_SIZE,
+#             "ode_steps": ode_steps,
+#             "ode_solver": getattr(ode_solver, "__name__", str(ode_solver)),
+#             "image_shape": IMAGE_SHAPE
+#         }
+#     with mlflow.start_run(run_name = run_name) as run: 
+#         logger.info("Starting unconditional training")  
+#         mlflow.log_params(params)
+#         logger.info("Hyperparameters:\n" + "\n".join(f" {k}: {v}" for k, v in params.items()))
+#         global_step = 0
+#         for epoch in tqdm(range(num_epochs)):
+#             model.train()
+#             running_loss = 0.0
+#             # Loop over dataset
+#             for i,(x1,_) in enumerate(dataloader):
+#                 optim.zero_grad()
+#                 # Generate esstimated velociy fields and compute MSE
+#                 mse = flow_matching_step(model,x1,loss_fn,device)
+#                 mse.backward() 
+#                 optim.step()
+#                 running_loss += mse.item()
+
+#                 if global_step % log_every_step == 0:
+#                     mlflow.log_metric("mse_step", mse.item(), step = global_step)
+#                     logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] mse={mse.item() :.6f}")
+#                 global_step += 1
+#             # Sample batch of images
+#             if epoch % log_every_epoch == 0:
+#                 mlflow.log_metric("mse_epoch", running_loss / len(dataloader), step = epoch)
+#                 # Create callback for velocity field
+#                 f = make_vf_uncond(model)
+#                 logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Creating sample images")
+#                 samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, seed = 0, device=device)
+#                 img = create_pil_image(samples)
+#                 logger.info(f"[epoch {epoch:03d} | step {global_step:06d}] Saving sample images")
+#                 mlflow.log_image(img,key="train_generated_samples", step = epoch)
                 
         
         
-        f = make_vf_uncond(model)
-        samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0,device=device)
-        for i,x in enumerate(samples):
-            img = create_pil_image(x,nrow=sample_grid_size)
-            mlflow.log_image(img,key="final_generated_samples", step = i)
-        logger.info("Saving model artifact")
-        model_info = mlflow.pytorch.log_model(
-            model,
-            name = 'UNet'
-        )
-        mlflow.log_artifact(log_path, artifact_path="logs")
-        tmpdir = os.path.dirname(log_path)
-        shutil.rmtree(tmpdir, ignore_errors=True)
-    return model_info
+#         f = make_vf_uncond(model)
+#         samples = create_samples(BATCH_SIZE, IMAGE_SHAPE, ode_solver, f, n_steps = ode_steps, return_all=True, seed = 0,device=device)
+#         for i,x in enumerate(samples):
+#             img = create_pil_image(x,nrow=sample_grid_size)
+#             mlflow.log_image(img,key="final_generated_samples", step = i)
+#         logger.info("Saving model artifact")
+#         model_info = mlflow.pytorch.log_model(
+#             model,
+#             name = 'UNet'
+#         )
+#         mlflow.log_artifact(log_path, artifact_path="logs")
+#         tmpdir = os.path.dirname(log_path)
+#         shutil.rmtree(tmpdir, ignore_errors=True)
+#     return model_info
+
+def train_loop_uncond(
+    model,
+    dataloader,
+    num_epochs,
+    lr,
+    device,
+    on_step=None,
+    on_epoch=None,
+):
+    """
+    on_step - callback for logging on given steps
+    on_epoch - callback for logging on epoch
+    """
+    optim = torch.optim.AdamW(model.parameters(), lr=lr)
+    loss_fn = nn.MSELoss()
+
+    global_step = 0
+    best = float("inf")
+    for epoch in range(num_epochs):
+        model.train()
+        running = 0.0
+
+        for x1, _ in dataloader:
+            optim.zero_grad()
+            mse = flow_matching_step(model, x1, loss_fn, device)
+            mse.backward()
+            optim.step()
+
+            m = float(mse.item())
+            running += m
+
+            if on_step is not None:
+                on_step(global_step, m, epoch)
+
+            global_step += 1
+
+        mse_epoch = running / len(dataloader)
+        best = min(mse_epoch,best)
+
+        if on_epoch is not None:
+            on_epoch(epoch, mse_epoch)
+
+    return best
+
+# TODO:
+# def train_uncond_hpt(trial):
+#     cfg = sample_cfg(trial)
+
+#     mlflow.set_experiment("hpt/cond_unet")
+#     with mlflow.start_run(run_name=f"trial_{trial.number:04d}"):
+#         mlflow.log_params(cfg)
+#         mlflow.set_tag("optuna_trial", trial.number)
+
+#         def on_epoch(epoch, val_loss):
+#             mlflow.log_metric("val_loss", float(val_loss), step=epoch)
+#             trial.report(val_loss, step=epoch)
+#             if trial.should_prune():
+#                 raise optuna.TrialPruned()
+
+#         best = train_loop_uncond(
+#             model=build_model(cfg),
+#             dataloader=train_loader,
+#             num_epochs=cfg["hpt_epochs"],   # small budget
+#             on_epoch=on_epoch,
+#         )
+
+#         mlflow.log_metric("best_val_loss", float(best))
+#         return float(best)
         
 # TODO: refactor
 def train_loop_cfg(
