@@ -2,18 +2,20 @@ from dataclasses import dataclass
 from typing import Tuple, Literal
 import torch.nn as nn
 
+ActivationName = Literal["relu", "silu", "gelu"]
+UpsampleMode = Literal["nearest", "bilinear", "convtranspose"]
 
-
-def make_activation(name: str) -> nn.Module:
+def make_activation(name: ActivationName) -> type[nn.Module]:
+    name = name.lower()
     if name == "relu":
-        return nn.ReLU(inplace=True)
+        return nn.ReLU
     if name == "silu":
-        return nn.SiLU(inplace=True)
+        return nn.SiLU
     if name == "gelu":
-        return nn.GELU()
+        return nn.GELU
     raise ValueError(f"Unknown activation {name}")
 
-def make_upsample(name: str, channels: int):
+def make_upsample(name: UpsampleMode, channels: int):
     if name == "nearest":
         return nn.Upsample(scale_factor=2, mode="nearest")
     if name == "bilinear":
@@ -24,15 +26,19 @@ def make_upsample(name: str, channels: int):
 
 @dataclass(frozen=True)
 class UNetConfig:
-    base_channels: int
-    num_res_blocks: int
-    dropout: float
-    channel_mults: Tuple[int, ...]
-    lr: float
-    weight_decay: float
+    # --- architecture ---
+    channels: Tuple[int, ...]          
+    d_trunk: int = 32                  
+    d_concat: int = 8                 
+    group_norm_size: int = 8
 
-    activation: Literal["relu", "silu", "gelu"] = "silu"
-    upsample: Literal["nearest", "bilinear", "convtranspose"] = "nearest"
+    # --- time embedding ---
+    d_time: int = 128
+    max_time_period: float = 10000.0
+
+    # --- choices ---
+    activation: ActivationName = "silu"
+    upsample_mode: UpsampleMode = "nearest"
 
 
 

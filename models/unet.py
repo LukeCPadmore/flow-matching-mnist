@@ -2,51 +2,56 @@ from typing import Optional, Any
 import torch 
 import torch.nn as nn
 import math
+from config import make_activation,make_upsample, UNetConfig
 
 class SinusoidalTimeEmbedding(nn.Module):
-    def __init__(self,embedding_dim:int = 128, trunk_dim:int = 32, max_period: float = 10000.0):
+    def __init__(
+        self,
+        embedding_dim: int = 128,
+        trunk_dim: int = 32,
+        max_period: float = 10000.0,
+        activation: type[nn.Module] | None = None,
+    ):
+        super().__init__()
         assert embedding_dim % 2 == 0, "Use an even embedding dimension."
-        super().__init__() 
         self.embedding_dim = embedding_dim
         self.log_max_period = math.log(max_period)
-        self.trunk_dim = trunk_dim
+
+        act = activation if activation is not None else nn.SiLU
+
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim,trunk_dim),
-            nn.SiLU(),
-            nn.Linear(trunk_dim,trunk_dim)
+            nn.Linear(embedding_dim, trunk_dim),
+            act(),
+            nn.Linear(trunk_dim, trunk_dim),
         )
 
-    def _sinusoidal_time_embedding(self,t: torch.Tensor):
-        """
-        t: shape (B,) or (B, 1) — timesteps (float or int)
-        d: even embedding dimension
-        returns: (B, d) with interleaved [sin(w0 t), cos(w0 t), sin(w1 t), cos(w1 t), ...]
-        """
-        t = t.squeeze()                      
+    def _sinusoidal_time_embedding(self, t: torch.Tensor) -> torch.Tensor:
+        t = t.squeeze()
         B = t.shape[0]
         half = self.embedding_dim // 2
 
-        i = torch.arange(half, device=t.device, dtype=torch.float32)  # [0..half-1]
+        i = torch.arange(half, device=t.device, dtype=torch.float32)
         inv_freq = torch.exp(-self.log_max_period * (i / half))  # (half,)
+        angles = t[:, None] * inv_freq[None, :]                  # (B, half)
 
-        angles = t[:, None] * inv_freq[None, :]                       # (B, half)
+        emb = torch.stack([angles.sin(), angles.cos()], dim=-1)  # (B, half, 2)
+        return emb.flatten(start_dim=1)                          # (B, embedding_dim)
 
-        # Interleave: stack sines & cosines then flatten the last two dims
-        emb = torch.stack([angles.sin(), angles.cos()], dim=-1)       # (B, half, 2)
-        emb = emb.flatten(start_dim=1)                                 # (B, d)
-        return emb
-    
-    def forward(self,t:torch.Tensor):
-        time_embeddings = self._sinusoidal_time_embedding(t)
-        return self.mlp(time_embeddings)
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        return self.mlp(self._sinusoidal_time_embedding(t))
     
 class SimpleClassConditioning(nn.Module):
-    def __init__(self,cls_dim, embedding_dim, trunk_dim):
+    def __init__(self,
+                 cls_dim, 
+                 embedding_dim, 
+                 trunk_dim,
+                 activation: type[nn.Module] | None = None,):
         super().__init__()
         self.cond_emb = nn.Embedding(cls_dim,embedding_dim)
+        act = activation if activation else nn.SiLU
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim,trunk_dim),
-            nn.SiLU(),
+            act(),
             nn.Linear(trunk_dim,trunk_dim)
         )
     def forward(self,cls_idx):
@@ -59,25 +64,27 @@ class ConvDownblock(nn.Module):
                  out_channels,
                  d_trunk,
                  d_concat,
-                 group_norm_size = 8):
+                 group_norm_size = 8,
+                 activation: type[nn.Module] | None = None,):
         """
         Deciding to use stride in order to downsample instead of maxpooling
         """
         super().__init__()
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
+        act = activation if activation is not None else nn.SiLU
         self.conv =  nn.Sequential(
             nn.GroupNorm(self.group_norm_size,in_channels+self.d_concat),
             nn.Conv2d(in_channels+self.d_concat,out_channels,kernel_size=3,padding=1,stride=1,bias=False),
-            nn.SiLU(),
+            act(),
             nn.GroupNorm(self.group_norm_size,out_channels),
             nn.Conv2d(out_channels,out_channels,kernel_size=3,stride=1,padding=1,bias=False),
-            nn.SiLU()
+            act()
         )
         self.down = nn.Sequential(
             nn.GroupNorm(self.group_norm_size,out_channels),
             nn.Conv2d(out_channels,out_channels,kernel_size=3,stride=2,padding=1,bias=False),
-            nn.SiLU(),
+            act(),
         )
         self.time_emb_mlp = nn.Linear(d_trunk,d_concat)
 
@@ -101,21 +108,33 @@ class ConvUpblock(nn.Module):
                  d_trunk,
                  d_concat,
                  group_norm_size = 8,
-                 upsample_mode='nearest'):
+                 upsample_mode = "nearest",
+                 activation: type[nn.Module] | None = None):
         """
         Note input will be sized (B,2*in_channels + d_concat,H,W)
         """
         super().__init__()
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
-        self.upsampler = nn.Upsample(scale_factor = 2 ,mode = upsample_mode)
+        self.upsampler = make_upsample(upsample_mode, in_channels)
+        act = activation if activation else nn.SiLU
         self.block = nn.Sequential( 
             nn.GroupNorm(self.group_norm_size,2*in_channels+self.d_concat),
-            nn.Conv2d(2*in_channels+self.d_concat,out_channels,kernel_size=3,padding=1,stride=1,bias=False),
-            nn.SiLU(),
+            nn.Conv2d(2*in_channels+self.d_concat,
+                      out_channels,
+                      kernel_size=3,
+                      padding=1,
+                      stride=1,
+                      bias=False),
+            act(),
             nn.GroupNorm(self.group_norm_size,out_channels),
-            nn.Conv2d(out_channels,out_channels,kernel_size=3,stride=1,padding=1,bias=False),
-            nn.SiLU()
+            nn.Conv2d(out_channels,
+                      out_channels,
+                      kernel_size=3,
+                      stride=1,
+                      padding=1,
+                      bias=False),
+            act()
         )
         self.time_emb_mlp = nn.Linear(d_trunk,d_concat)
 
@@ -137,7 +156,11 @@ class ConvUpblock(nn.Module):
     
 
 class Encoder(nn.Module): 
-    def __init__(self,channels:list[int],d_trunk,d_concat,group_norm_size=8):
+    def __init__(self,channels:list[int],
+                 d_trunk,
+                 d_concat,
+                 group_norm_size=8,
+                 activation: type[nn.Module] | None = None,):
         """
         For each channel create DownConvblock with in_channels = channel[i] and out_channels = channels[i+1]
         """
@@ -152,7 +175,8 @@ class Encoder(nn.Module):
                 out_channels,
                 d_trunk,
                 d_concat,
-                group_norm_size=group_norm_size
+                group_norm_size=group_norm_size,
+                activation=activation
             )
             for in_channels,out_channels in zip(self.channels[:-1],self.channels[1:])
         ])
@@ -170,7 +194,11 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self,channels:list[int],d_trunk,d_concat,group_norm_size=8,upsample_mode='nearest'):
+    def __init__(self,channels:list[int],
+                 d_trunk,d_concat,
+                 group_norm_size=8,
+                 upsample_mode='nearest',
+                 activation: type[nn.Module] | None = None,):
         """
         Expects list of channels with the same orders as te encoder
         """
@@ -185,8 +213,9 @@ class Decoder(nn.Module):
                 out_channels,
                 d_trunk,
                 d_concat,
-                group_norm_size=group_norm_size, 
-                upsample_mode=upsample_mode
+                group_norm_size=group_norm_size,
+                upsample_mode=upsample_mode,
+                activation = activation
             )
             for in_channels,out_channels in zip(self.channels[:-1],self.channels[1:])
         ])
@@ -198,7 +227,11 @@ class Decoder(nn.Module):
 
 
 class Bottleneck(nn.Module): 
-    def __init__(self,channels,d_trunk,d_concat,group_norm_size=8):
+    def __init__(self,channels,
+                 d_trunk,
+                 d_concat,
+                 group_norm_size=8,
+                 activation: type[nn.Module] | None = None,):
         """
         Uses similar architecture to ConvDownblock but doesn't use stride = 2 to halve image size
         """
@@ -206,15 +239,18 @@ class Bottleneck(nn.Module):
         self.channels = channels
         self.d_trunk = d_trunk
         self.d_concat = d_concat
+        act = activation if activation else nn.SiLU
         self.bottleneck = nn.Sequential( 
             nn.GroupNorm(group_norm_size,self.channels+self.d_concat),
             nn.Conv2d(self.channels+self.d_concat,self.channels,kernel_size=3,padding=1,stride=1,bias=False),
-            nn.SiLU(),
+            act(),
             nn.GroupNorm(group_norm_size,self.channels),
             nn.Conv2d(self.channels,self.channels,kernel_size=3,stride=1,padding=1,bias=False),
-            nn.SiLU()
+            act()
         )
-        self.time_emb_mlp = nn.Linear(d_trunk,d_concat, bias = False)
+        self.time_emb_mlp = nn.Linear(d_trunk,
+                                      d_concat, 
+                                      bias = False)
 
     def forward(self, x:torch.Tensor, time_emb:torch.Tensor) -> torch.Tensor:
         """
@@ -229,13 +265,27 @@ class Bottleneck(nn.Module):
         
         
 class UNet(nn.Module):
-    def __init__(self,channels:list[int],d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128):
+    def __init__(self, 
+                 channels, 
+                 d_trunk=32, 
+                 d_concat=8, 
+                 group_norm_size=8,
+                 d_time=128, 
+                 max_time_period=10000.0,
+                 activation: type[nn.Module] | None = None,
+                 upsample = type[]):
         super().__init__()
-        self.channels = channels
-        self.encoder = Encoder(channels,d_trunk, d_concat, group_norm_size)
-        self.decoder = Decoder(channels,d_trunk, d_concat, group_norm_size)
-        self.bottleneck = Bottleneck(self.channels[-1],d_trunk,2 * d_concat,group_norm_size)
-        self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk, 2 * d_concat)
+        self.channels = list(channels)
+        self.encoder = Encoder(channels,d_trunk, d_concat, group_norm_size, activation=activation)
+        self.decoder = Decoder(channels,d_trunk, d_concat, group_norm_size,upsample_mode=upsample_mode,activation=activation)
+        self.bottleneck = Bottleneck(self.channels[-1],d_trunk,2 * d_concat,group_norm_size,activation=activation)
+
+        self.time_embedding_mlp = SinusoidalTimeEmbedding(
+            embedding_dim=d_time,
+            trunk_dim=d_trunk,
+            max_period=max_time_period,
+            activation=activation,
+        )
 
     def forward(self,x,t,*args, **kwargs) -> torch.Tensor:
         time_emb = self.time_embedding_mlp(t)
@@ -243,24 +293,39 @@ class UNet(nn.Module):
         x = self.bottleneck(x,time_emb)
         x = self.decoder(x,time_emb,skip_features)
         return x
-
-class CondUNet(nn.Module):
-    def __init__(self,channels:list[int], cond_dim, d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128, d_cls_emb = 128):
-        super().__init__()
-        # 2 * trunk for individual ConvBlock MLP dimensions as coming from time embedding and class embedding
-        self.channels = channels
-        self.encoder = Encoder(channels,2 * d_trunk, d_concat,group_norm_size)
-        self.decoder = Decoder(channels,2 * d_trunk, d_concat,group_norm_size)
-        self.bottleneck = Bottleneck(self.channels[-1],2 * d_trunk, d_concat,group_norm_size)
-        self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
-        self.simple_cond_mlp = SimpleClassConditioning(cond_dim, d_cls_emb , d_trunk)
     
-    def forward(self,x,t,c,*args,**kwargs) -> torch.Tensor:
-        cond_emb = self.simple_cond_mlp(c)
-        time_emb = self.time_embedding_mlp(t)
-        combined_emb = torch.cat([cond_emb,time_emb], dim = 1)
-        x, skip_features = self.encoder(x,combined_emb)
-        x = self.bottleneck(x,combined_emb)
-        x = self.decoder(x,combined_emb,skip_features)
-        return x
+@classmethod
+def from_config(cls, cfg: UNetConfig) -> "UNet":
+    return cls(
+        channels=list(cfg.channels),
+        d_trunk=cfg.d_trunk,
+        d_concat=cfg.d_concat,
+        group_norm_size=cfg.group_norm_size,
+        d_time=cfg.d_time,
+        max_time_period=cfg.max_time_period,
+        activation=make_activation(cfg.activation),
+        upsample_mode=cfg.upsample_mode,
+    )
+
+
+# TODO: Refactor
+# class CondUNet(nn.Module):
+#     def __init__(self,channels:list[int], cond_dim, d_trunk = 8, d_concat = 8, group_norm_size = 8, d_time = 128, d_cls_emb = 128):
+#         super().__init__()
+#         # 2 * trunk for individual ConvBlock MLP dimensions as coming from time embedding and class embedding
+#         self.channels = channels
+#         self.encoder = Encoder(channels,2 * d_trunk, d_concat,group_norm_size)
+#         self.decoder = Decoder(channels,2 * d_trunk, d_concat,group_norm_size)
+#         self.bottleneck = Bottleneck(self.channels[-1],2 * d_trunk, d_concat,group_norm_size)
+#         self.time_embedding_mlp = SinusoidalTimeEmbedding(d_time, d_trunk)
+#         self.simple_cond_mlp = SimpleClassConditioning(cond_dim, d_cls_emb , d_trunk)
+    
+#     def forward(self,x,t,c,*args,**kwargs) -> torch.Tensor:
+#         cond_emb = self.simple_cond_mlp(c)
+#         time_emb = self.time_embedding_mlp(t)
+#         combined_emb = torch.cat([cond_emb,time_emb], dim = 1)
+#         x, skip_features = self.encoder(x,combined_emb)
+#         x = self.bottleneck(x,combined_emb)
+#         x = self.decoder(x,combined_emb,skip_features)
+#         return x
 
