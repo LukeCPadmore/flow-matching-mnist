@@ -2,7 +2,7 @@ from typing import Optional, Any
 import torch 
 import torch.nn as nn
 import math
-from config import make_activation,make_upsample, UNetConfig
+from models.config import make_activation,make_upsample, UNetConfig
 
 class SinusoidalTimeEmbedding(nn.Module):
     def __init__(
@@ -273,7 +273,7 @@ class UNet(nn.Module):
                  d_time=128, 
                  max_time_period=10000.0,
                  activation: type[nn.Module] | None = None,
-                 upsample = type[]):
+                 upsample_mode = 'nearest'):
         super().__init__()
         self.channels = list(channels)
         self.encoder = Encoder(channels,d_trunk, d_concat, group_norm_size, activation=activation)
@@ -294,18 +294,18 @@ class UNet(nn.Module):
         x = self.decoder(x,time_emb,skip_features)
         return x
     
-@classmethod
-def from_config(cls, cfg: UNetConfig) -> "UNet":
-    return cls(
-        channels=list(cfg.channels),
-        d_trunk=cfg.d_trunk,
-        d_concat=cfg.d_concat,
-        group_norm_size=cfg.group_norm_size,
-        d_time=cfg.d_time,
-        max_time_period=cfg.max_time_period,
-        activation=make_activation(cfg.activation),
-        upsample_mode=cfg.upsample_mode,
-    )
+    @classmethod
+    def from_config(cls, cfg: UNetConfig) -> "UNet":
+        return cls(
+            channels=list(cfg.channels),
+            d_trunk=cfg.d_trunk,
+            d_concat=cfg.d_concat,
+            group_norm_size=cfg.group_norm_size,
+            d_time=cfg.d_time,
+            max_time_period=cfg.max_time_period,
+            activation=make_activation(cfg.activation),
+            upsample_mode=cfg.upsample_mode,
+        )
 
 
 # TODO: Refactor
