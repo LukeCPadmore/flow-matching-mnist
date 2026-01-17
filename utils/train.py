@@ -12,7 +12,7 @@ from tqdm import tqdm
 import mlflow.pytorch
 from datetime import datetime
 from utils.logger_utils import get_temp_logger
-from models.ode_solvers import euler_solver, rk2_solver, create_samples, make_vf_uncond, make_vf_cfg
+from models.ode_solvers import euler_solver, create_samples,  make_vf_cfg
 
 def flow_matching_step(model,x1,loss_fn,device):
     B = x1.shape[0]
@@ -140,7 +140,7 @@ def train_loop_uncond(
     model,
     dataloader,
     num_epochs,
-    lr,
+    optim,
     device,
     on_step=None,
     on_epoch=None,
@@ -149,7 +149,6 @@ def train_loop_uncond(
     on_step - callback for logging on given steps
     on_epoch - callback for logging on epoch
     """
-    optim = torch.optim.AdamW(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
     global_step = 0
