@@ -3,6 +3,10 @@ import tempfile
 import os
 from typing import Tuple
 from tqdm import tqdm
+from contextlib import contextmanager
+import shutil
+import mlflow
+
 
 class TqdmStreamHandler(logging.StreamHandler):
     def emit(self, record):
@@ -12,6 +16,7 @@ class TqdmStreamHandler(logging.StreamHandler):
             self.flush()
         except Exception:
             self.handleError(record)
+
 
 def get_temp_logger(name: str = "training") -> Tuple[logging.Logger, str]:
     """
@@ -30,9 +35,7 @@ def get_temp_logger(name: str = "training") -> Tuple[logging.Logger, str]:
     if logger.handlers:
         logger.handlers.clear()
 
-    fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
     console = TqdmStreamHandler()
     console.setFormatter(fmt)
@@ -44,3 +47,17 @@ def get_temp_logger(name: str = "training") -> Tuple[logging.Logger, str]:
     logger.addHandler(file_handler)
 
     return logger, log_path
+
+
+@contextmanager
+def trial_logger(name: str):
+    logger, log_path = get_temp_logger(name)
+    try:
+        yield logger
+    finally:
+        # always runs: success, prune, or error
+        try:
+            mlflow.log_artifact(log_path, artifact_path="logs")
+        except Exception:
+            pass  # MLflow may already be closed
+        shutil.rmtree(os.path.dirname(log_path), ignore_errors=True)

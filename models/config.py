@@ -1,12 +1,67 @@
 from dataclasses import dataclass
-from typing import Tuple, Literal
+from typing import Tuple, Literal, Mapping, Any, Sequence
 import torch.nn as nn
 import torch.optim
 import optuna
 
 ActivationName = Literal["relu", "silu", "gelu"]
-UpsampleMode = Literal["nearest", "bilinear", "convtranspose"]
+UpsampleMode = Literal["nearest", "bilinear", "convtßranspose"]
 OptimName = Literal["adam", "adamw", "sgd"]
+
+
+@dataclass
+class SamplerCtx:
+    trial: optuna.Trial
+    fixed: Mapping[str, Any] | None = None
+    choices: Mapping[str, Any] | None = None
+    prefix: str = ""
+
+    def __post_init__(self):
+        self.fixed = dict(self.fixed or {})
+        self.choices = dict(self.choices or {})
+
+    def _name(self, key: str) -> str:
+        return f"{self.prefix}.{key}" if self.prefix else key
+
+    def cat(self, key: str, default: Sequence[Any]) -> Any:
+        if key in self.fixed:
+            return self.fixed[key]
+        opts = self.choices.get(key, default)
+        return self.trial.suggest_categorical(self._name(key), list(opts))
+
+    def flt(self, key: str, low: float, high: float, *, log: bool = False) -> float:
+        if key in self.fixed:
+            return float(self.fixed[key])
+        spec = self.choices.get(key, (low, high, log))
+        if isinstance(spec, tuple):
+            if len(spec) == 2:
+                low_, high_ = spec
+                log_ = log
+            else:
+                low_, high_, log_ = spec
+        else:
+            # allow passing dict-like specs if you want later
+            raise TypeError(f"Bad choices spec for {key}: {spec}")
+        return float(
+            self.trial.suggest_float(
+                self._name(key), float(low_), float(high_), log=bool(log_)
+            )
+        )
+
+    def int(self, key: str, low: int, high: int, *, log: bool = False) -> int:
+        if key in self.fixed:
+            return int(self.fixed[key])
+        spec = self.choices.get(key, (low, high, log))
+        if len(spec) == 2:
+            low_, high_ = spec
+            log_ = log
+        else:
+            low_, high_, log_ = spec
+        return int(
+            self.trial.suggest_int(
+                self._name(key), int(low_), int(high_), log=bool(log_)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -47,13 +102,49 @@ class UNetConfig:
         raise ValueError(f"Unknown upsample {name}")
 
     @classmethod
-    def sample_unet_cfg(cls, trial: optuna.Trial, *, fixed=None):
-        fixed = dict(fixed or {})
+    def sample(
+        cls,
+        trial: optuna.Trial,
+        *,
+        fixed: Mapping[str, Any] | None = None,
+        choices: Mapping[str, Any] | None = None,
+        prefix: str = "unet",
+    ) -> "UNetConfig":
+        s = SamplerCtx(trial, fixed=fixed, choices=choices, prefix=prefix)
 
-        def get(name, sampler):
-            return fixed.get(name, sampler())
-        
-        
+        channels = s.cat(
+            "channels",
+            [(1, 64, 128), (1, 64, 128, 256), (1, 64, 128, 256, 512)],
+        )
+        return cls(
+            channels=tuple(channels),
+            d_trunk=int(s.cat("d_trunk", [16, 32, 64])),
+            d_concat=int(s.cat("d_concat", [4, 8, 16])),
+            group_norm_size=int(s.cat("group_norm_size", [4, 8])),
+            d_time=int(s.cat("d_time", [64, 128])),
+            max_time_period=float(s.cat("max_time_period", [1000.0, 10000.0])),
+            activation=s.cat("activation", ["silu", "relu", "gelu"]),
+            upsample_mode=s.cat(
+                "upsample_mode", ["nearest", "bilinear", "convtranspose"]
+            ),
+        )
+
+    @classmethod
+    def to_mlflow_params(self, *, prefix: str = "unet") -> dict[str, Any]:
+        p = {
+            "channels": ",".join(map(str, self.channels)),
+            "d_trunk": self.d_trunk,
+            "d_concat": self.d_concat,
+            "group_norm_size": self.group_norm_size,
+            "d_time": self.d_time,
+            "max_time_period": self.max_time_period,
+            "activation": self.activation,
+            "upsample_mode": self.upsample_mode,
+        }
+
+        if prefix:
+            return {f"{prefix}.{k}": v for k, v in p.items()}
+        return p
 
 
 @dataclass(frozen=True)
@@ -61,6 +152,35 @@ class OptimConfig:
     name: OptimName = "adamw"
     lr: float = 3e-4
     weight_decay: float = 1e-4
+
+    @classmethod
+    def sample(
+        cls,
+        trial: optuna.Trial,
+        *,
+        fixed: Mapping[str, Any] | None = None,
+        choices: Mapping[str, Any] | None = None,
+        prefix: str = "optim",
+    ) -> "OptimConfig":
+        s = SamplerCtx(trial, fixed=fixed, choices=choices, prefix=prefix)
+
+        name = s.cat("name", ["adamw", "adam"])
+        lr = s.flt("lr", 1e-5, 5e-4, log=True)
+        wd = s.flt("weight_decay", 1e-6, 1e-2, log=True)
+
+        # # only used if you decide to tune them
+        # beta1 = s.flt("beta1", 0.85, 0.95) if name in ("adamw", "adam") else 0.9
+        # beta2 = s.flt("beta2", 0.98, 0.999) if name in ("adamw", "adam") else 0.999
+        # momentum = s.flt("momentum", 0.0, 0.95) if name == "sgd" else 0.9
+
+        return cls(
+            name=name,
+            lr=lr,
+            weight_decay=wd,
+            # beta1=beta1,
+            # beta2=beta2,
+            # momentum=momentum,
+        )
 
     def make_optimizer(self, params):
         if self.name == "adam":
@@ -85,19 +205,21 @@ class OptimConfig:
         raise ValueError(f"Unknown optimiser {self.name}")
 
     @classmethod
-    def sample_optim_cfg(cls, trial: optuna.Trial, *, fixed=None):
-        fixed = dict(fixed or {})
+    def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
+        p = {
+            "name": self.name,
+            "lr": float(self.lr),
+            "weight_decay": float(self.weight_decay),
+        }
+        # if self.name in ("adam", "adamw"):
+        #     p.update({
+        #         "beta1": self.beta1,
+        #         "beta2": self.beta2,
+        #     })
 
-        def get(name, sampler):
-            return fixed.get(name, sampler())
+        # if self.name == "sgd":
+        #     p["momentum"] = self.momentum
 
-        name = get(
-            "name", lambda: trial.suggest_categorical("optim", ["adamw", "adam"])
-        )
-        lr = get("lr", lambda: trial.suggest_float("lr", 1e-5, 5e-4, log=True))
-        wd = get(
-            "weight_decay",
-            lambda: trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
-        )
-
-        return cls(name=name, lr=float(lr), weight_decay=float(wd))
+        if prefix:
+            return {f"{prefix}.{k}": v for k, v in p.items()}
+        return p
