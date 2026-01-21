@@ -6,9 +6,10 @@ from utils.create_dataloaders import create_mnist_train_val_loaders
 from utils.logger_utils import trial_logger
 from models.config import UNetConfig, OptimConfig
 
-train_loader, val_loader = create_mnist_train_val_loaders()
+train_loader, val_loader = create_mnist_train_val_loaders(num_workers=0)
 
 
+# TODO set of many runs to get a goo learning rate, colour logs to make them look nicer and log parameters to terminal logger
 def make_objective(
     train_loader, val_loader=None, experiment_name="optuna_hpt", device="cuda"
 ):
@@ -32,28 +33,32 @@ def make_objective(
             fixed={"name": "adamw", "weight_decay": 1e-4},
         )
         model = UNet.from_config(unet_cfg).to(device)
-        optim = optim_cfg.make_optimizer(model.params())
-        mlflow.set_experiment("hpt_lr_only/unet")
-        # with mlflow.start_run(run_name=f"trial_{trial.number:04d}"):
+        optim = optim_cfg.make_optimizer(model.parameters())
+        mlflow.set_experiment(experiment_name)
         with (
-            mlflow.start_run(run_name="smoke_test"),
+            mlflow.start_run(run_name=f"trial_{trial.number:04d}"),
             trial_logger(f"trial_{trial.number}") as logger,
         ):
-            # TODO: add "logger" logging and test
+            # Todo test this now
+            logger.info(f"Starting trial no {trial.number}")
             mlflow.set_tag("optuna.trial_number", trial.number)
             mlflow.set_tag("hpt_stage", "lr_only")
             mlflow.log_params(unet_cfg.to_mlflow_params())
             mlflow.log_params(optim_cfg.to_mlflow_params())
 
-            def on_epoch(epoch, mse_epoch, val_epoch):
-                mlflow.log_metric("mse_epoch", float(mse_epoch), step=epoch)
-                trial.report(mse_epoch, step=epoch)
+            def on_epoch(epoch, train_mse, val_mse):
+                logger.info(f"[epoch {epoch}] train_mse={train_mse:.6f}")
+                mlflow.log_metric("mse_epoch", float(train_mse), step=epoch)
+                trial.report(train_mse, step=epoch)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
 
-            def on_step(global_step, m, epoch):
+            def on_step(global_step, mse_step, epoch):
                 if global_step % 10 == 0:
-                    mlflow.log_metric("mse_epoch", float(m), step=global_step)
+                    logger.info(
+                        f"[epoch {epoch} | global_step {global_step:06d}] train_mse={mse_step:.6f}"
+                    )
+                    mlflow.log_metric("mse_step", float(mse_step), step=global_step)
 
             best = train_loop_uncond(
                 model=model,
@@ -63,15 +68,22 @@ def make_objective(
                 optim=optim,
                 device=device,
                 on_epoch=on_epoch,
+                on_step=on_step,
             )
 
             mlflow.log_metric("best_mse", float(best))
+            logger.info(f"Finishing trial with best MSE = {best:.4f}")
             return float(best)
 
     return objective
 
 
 if __name__ == "__main__":
-    study = optuna.create_study(direction="maximize")
-    objective = make_objective(train_loader)
+    study = optuna.create_study(
+        direction="minimize",
+        study_name="smoke_test",
+        storage="sqlite:///optuna.db",
+        load_if_exists=True,
+    )
+    objective = make_objective(train_loader, experiment_name="smoke-test")
     study.optimize(objective, n_trials=1)

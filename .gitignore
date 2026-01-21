@@ -3,3 +3,4 @@ mlruns/
 images/
 mlflow.db
 *.pyc
+optuna.dbß

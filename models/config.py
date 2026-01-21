@@ -129,7 +129,6 @@ class UNetConfig:
             ),
         )
 
-    @classmethod
     def to_mlflow_params(self, *, prefix: str = "unet") -> dict[str, Any]:
         p = {
             "channels": ",".join(map(str, self.channels)),
