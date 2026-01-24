@@ -224,11 +224,10 @@ class OptimConfig:
         return p
 
 
-
 class UNetHPT(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    fixed: Dict[str, Any] = Field(default_factory=dict)
-    choices: Dict[str, Any] = Field(default_factory=dict)
+    fixed: dict[str, Any] = Field(default_factory=dict)
+    choices: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_fixed(self):
@@ -237,15 +236,21 @@ class UNetHPT(BaseModel):
             if self.fixed["activation"] not in ("relu", "silu", "gelu"):
                 raise ValueError("unet.fixed.activation must be one of relu|silu|gelu")
         if "upsample_mode" in self.fixed:
-            if self.fixed["upsample_mode"] not in ("nearest", "bilinear", "convtranspose"):
-                raise ValueError("unet.fixed.upsample_mode must be nearest|bilinear|convtranspose")
+            if self.fixed["upsample_mode"] not in (
+                "nearest",
+                "bilinear",
+                "convtranspose",
+            ):
+                raise ValueError(
+                    "unet.fixed.upsample_mode must be nearest|bilinear|convtranspose"
+                )
         return self
 
 
 class OptimHPT(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    fixed: Dict[str, Any] = Field(default_factory=dict)
-    choices: Dict[str, Any] = Field(default_factory=dict)
+    fixed: dict[str, Any] = Field(default_factory=dict)
+    choices: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate(self):
