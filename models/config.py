@@ -4,9 +4,9 @@ import torch.nn as nn
 import torch.optim
 import optuna
 
-ActivationName = Literal["relu", "silu", "gelu"]
-UpsampleMode = Literal["nearest", "bilinear", "convtßranspose"]
 OptimName = Literal["adam", "adamw", "sgd"]
+ActivationName = Literal["relu", "silu", "gelu"]
+UpsampleMode = Literal["nearest", "bilinear", "convtranspose"]
 
 
 @dataclass
@@ -203,7 +203,6 @@ class OptimConfig:
             )
         raise ValueError(f"Unknown optimiser {self.name}")
 
-    @classmethod
     def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
         p = {
             "name": self.name,

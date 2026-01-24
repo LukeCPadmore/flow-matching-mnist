@@ -79,11 +79,12 @@ def make_objective(
 
 
 if __name__ == "__main__":
+    study_name = "hpt-lr-only"
     study = optuna.create_study(
         direction="minimize",
-        study_name="smoke_test",
+        study_name=study_name,
         storage="sqlite:///optuna.db",
         load_if_exists=True,
     )
-    objective = make_objective(train_loader, experiment_name="smoke-test")
-    study.optimize(objective, n_trials=1)
+    objective = make_objective(train_loader, experiment_name=study_name)
+    study.optimize(objective, n_trials=50)
