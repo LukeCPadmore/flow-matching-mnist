@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Tuple, Literal, Mapping, Any, Sequence
 import torch.nn as nn
 import torch.optim
@@ -203,7 +204,6 @@ class OptimConfig:
             )
         raise ValueError(f"Unknown optimiser {self.name}")
 
-    @classmethod
     def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
         p = {
             "name": self.name,
@@ -222,3 +222,39 @@ class OptimConfig:
         if prefix:
             return {f"{prefix}.{k}": v for k, v in p.items()}
         return p
+
+
+
+class UNetHPT(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fixed: Dict[str, Any] = Field(default_factory=dict)
+    choices: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_fixed(self):
+        # Optional: validate known fixed keys/types
+        if "activation" in self.fixed:
+            if self.fixed["activation"] not in ("relu", "silu", "gelu"):
+                raise ValueError("unet.fixed.activation must be one of relu|silu|gelu")
+        if "upsample_mode" in self.fixed:
+            if self.fixed["upsample_mode"] not in ("nearest", "bilinear", "convtranspose"):
+                raise ValueError("unet.fixed.upsample_mode must be nearest|bilinear|convtranspose")
+        return self
+
+
+class OptimHPT(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fixed: Dict[str, Any] = Field(default_factory=dict)
+    choices: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if "name" in self.fixed and self.fixed["name"] not in ("adam", "adamw", "sgd"):
+            raise ValueError("optim.fixed.name must be adam|adamw|sgd")
+        return self
+
+
+class HPTYaml(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    unet: UNetHPT = Field(default_factory=UNetHPT)
+    optim: OptimHPT = Field(default_factory=OptimHPT)
