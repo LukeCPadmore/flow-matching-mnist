@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 import optuna
 import torchvision.transforms as transforms
 from utils.create_dataloaders import default_transform
+from models.config import UNetConfig, OptimConfig
 
 class FloatSpec(BaseModel):
     type: Literal["float"]
@@ -22,6 +23,17 @@ class FloatSpec(BaseModel):
         if self.log and self.low <= 0:
             raise ValueError("log=true requires low > 0 for float spec")
         return self
+    
+    def sample(self, trial: optuna.Trial, name: str) -> float:
+        return float(
+            trial.suggest_float(
+                name,
+                float(self.low),
+                float(self.high),
+                log=bool(self.log),
+                step=None if self.step is None else float(self.step),
+            )
+        )
 
 
 class IntSpec(BaseModel):
@@ -42,6 +54,17 @@ class IntSpec(BaseModel):
         if self.log and self.low <= 0:
             raise ValueError("log=true requires low > 0 for int spec")
         return self
+    
+    def sample(self, trial: optuna.Trial, name: str) -> float:
+        return int(
+            trial.suggest_int(
+                name,
+                float(self.low),
+                float(self.high),
+                log=bool(self.log),
+                step=None if self.step is None else float(self.step),
+            )
+        )
 
 
 class CategoricalSpec(BaseModel):
@@ -54,6 +77,14 @@ class CategoricalSpec(BaseModel):
             raise ValueError("categorical spec requires non-empty choices")
         return self
 
+    def sample(self, trial: optuna.Trial, name: str) -> float:
+        return trial.suggest_categorical(
+                name,
+                float(self.low),
+                float(self.high),
+                log=bool(self.log),
+                step=None if self.step is None else float(self.step),
+            )
 
 SearchSpec = FloatSpec | IntSpec | CategoricalSpec
 
@@ -61,7 +92,7 @@ SearchSpec = FloatSpec | IntSpec | CategoricalSpec
 class UNetHPT(BaseModel):
     model_config = ConfigDict(extra="forbid")
     fixed: dict[str, Any] = Field(default_factory=dict)
-    choices: dict[str, Any] = Field(default_factory=dict)
+    choices: dict[str, SearchSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_fixed(self):
@@ -79,18 +110,31 @@ class UNetHPT(BaseModel):
                     "unet.fixed.upsample_mode must be nearest|bilinear|convtranspose"
                 )
         return self
+    
+    def sample(self, trial: optuna.Trial, *, prefix: str = "unet") -> OptimConfig:
+        resolved: Dict[str, Any] = dict(self.fixed)
+        for k, spec in self.choices.items():
+            resolved[k] = spec.sample(trial, f"{prefix}.{k}")
+        return UNetConfig(**resolved)
+
 
 
 class OptimHPT(BaseModel):
     model_config = ConfigDict(extra="forbid")
     fixed: dict[str, Any] = Field(default_factory=dict)
-    choices: dict[str, Any] = Field(default_factory=dict)
+    choices: dict[str, SearchSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate(self):
         if "name" in self.fixed and self.fixed["name"] not in ("adam", "adamw", "sgd"):
             raise ValueError("optim.fixed.name must be adam|adamw|sgd")
         return self
+    
+    def sample(self, trial: optuna.Trial, *, prefix: str = "optim") -> OptimConfig:
+        resolved: Dict[str, Any] = dict(self.fixed)
+        for k, spec in self.choices.items():
+            resolved[k] = spec.sample(trial, f"{prefix}.{k}")
+        return OptimConfig(**resolved)
 
 class OptunaStudy(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -113,20 +157,3 @@ class HPTYaml(BaseModel):
     optuna_study: OptunaStudy = Field(default_factory=OptunaStudy)
     unet: UNetHPT = Field(default_factory=UNetHPT)
     optim: OptimHPT = Field(default_factory=OptimHPT)
-
-def _sample_one(trial: optuna.Trial, name: str, spec: Mapping[str, Any]) -> Any:
-    # categorical
-    if "cat" in spec:
-        return trial.suggest_categorical(name, list(spec["cat"]))
-
-    # float range
-    if "float" in spec:
-        low, high = spec["float"]
-        return trial.suggest_float(name, float(low), float(high), log=bool(spec.get("log", False)))
-
-    # int range
-    if "int" in spec:
-        low, high = spec["int"]
-        return trial.suggest_int(name, int(low), int(high), log=bool(spec.get("log", False)), step=int(spec.get("step", 1)))
-
-    raise ValueError(f"Unknown choice spec for {name}: {spec}")
