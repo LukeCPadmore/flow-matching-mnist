@@ -4,3 +4,5 @@ images/
 mlflow.db
 *.pyc
 optuna.db
+.env
+.venv/*
