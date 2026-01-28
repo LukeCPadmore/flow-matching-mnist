@@ -1,0 +1,16 @@
+study:
+  study_name:
+  direction: "minimize"
+  storage: "sqlite:///optuna.db"
+
+torch:
+  device: "cuda"
+  seed: 0
+
+unet:
+  fixed:
+  choices:
+
+optim:
+  fixed:
+  choices:

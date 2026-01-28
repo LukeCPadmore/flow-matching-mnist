@@ -13,19 +13,19 @@ default_transform = transform = transforms.Compose(
 
 def create_mnist_train_val_loaders(
     batch_size: int = 64,
-    root: str = "/home/luke-padmore/Source/flow-matching-mnist/data",
+    data_path: str = "/home/luke-padmore/Source/flow-matching-mnist/data",
     transform: transforms.Compose = default_transform,
     num_workers=4,
     shuffle=True,
 ) -> tuple[DataLoader, DataLoader]:
     trainset = torchvision.datasets.MNIST(
-        root=root, train=True, download=True, transform=transform
+        root=data_path, train=True, download=True, transform=transform
     )
     train_loader = DataLoader(
         trainset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers
     )
     val_set = torchvision.datasets.MNIST(
-        root=root,
+        root=data_path,
         train=False,
         download=True,
         transform=transform,
