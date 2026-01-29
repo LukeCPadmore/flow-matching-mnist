@@ -2,7 +2,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-default_transform = transform = transforms.Compose(
+default_transform = transforms.Compose(
     [
         transforms.ToTensor(),
         transforms.Pad(2, padding_mode="constant"),
@@ -10,14 +10,25 @@ default_transform = transform = transforms.Compose(
     ]
 )
 
+TRANSFORMS = {"default": default_transform, "none": transforms.ToTensor()}
+
+
+def build_transform(name: str):
+    if name == "default":
+        return default_transform
+    if name == "none":
+        return transforms.ToTensor()
+    raise ValueError(f"Unknown transform preset: {name}")
+
 
 def create_mnist_train_val_loaders(
     batch_size: int = 64,
     data_path: str = "/home/luke-padmore/Source/flow-matching-mnist/data",
-    transform: transforms.Compose = default_transform,
+    transform: str = "default",
     num_workers=4,
     shuffle=True,
 ) -> tuple[DataLoader, DataLoader]:
+    transform = TRANSFORMS.get(transform, default_transform)
     trainset = torchvision.datasets.MNIST(
         root=data_path, train=True, download=True, transform=transform
     )

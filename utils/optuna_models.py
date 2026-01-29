@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 from utils.create_dataloaders import default_transform
 from models.config import UNetConfig, OptimConfig
 
+
 class FloatSpec(BaseModel):
     type: Literal["float"]
     low: float
@@ -23,7 +24,7 @@ class FloatSpec(BaseModel):
         if self.log and self.low <= 0:
             raise ValueError("log=true requires low > 0 for float spec")
         return self
-    
+
     def sample(self, trial: optuna.Trial, name: str) -> float:
         return float(
             trial.suggest_float(
@@ -54,7 +55,7 @@ class IntSpec(BaseModel):
         if self.log and self.low <= 0:
             raise ValueError("log=true requires low > 0 for int spec")
         return self
-    
+
     def sample(self, trial: optuna.Trial, name: str) -> float:
         return int(
             trial.suggest_int(
@@ -78,13 +79,9 @@ class CategoricalSpec(BaseModel):
         return self
 
     def sample(self, trial: optuna.Trial, name: str) -> float:
-        return trial.suggest_categorical(
-                name,
-                float(self.low),
-                float(self.high),
-                log=bool(self.log),
-                step=None if self.step is None else float(self.step),
-            )
+        opts = [tuple(x) if isinstance(x, list) else x for x in self.choices]
+        return trial.suggest_categorical(name, opts)
+
 
 SearchSpec = FloatSpec | IntSpec | CategoricalSpec
 
@@ -110,13 +107,12 @@ class UNetHPT(BaseModel):
                     "unet.fixed.upsample_mode must be nearest|bilinear|convtranspose"
                 )
         return self
-    
+
     def sample(self, trial: optuna.Trial, *, prefix: str = "unet") -> OptimConfig:
         resolved: Dict[str, Any] = dict(self.fixed)
         for k, spec in self.choices.items():
             resolved[k] = spec.sample(trial, f"{prefix}.{k}")
         return UNetConfig(**resolved)
-
 
 
 class OptimHPT(BaseModel):
@@ -129,32 +125,40 @@ class OptimHPT(BaseModel):
         if "name" in self.fixed and self.fixed["name"] not in ("adam", "adamw", "sgd"):
             raise ValueError("optim.fixed.name must be adam|adamw|sgd")
         return self
-    
+
     def sample(self, trial: optuna.Trial, *, prefix: str = "optim") -> OptimConfig:
         resolved: Dict[str, Any] = dict(self.fixed)
         for k, spec in self.choices.items():
             resolved[k] = spec.sample(trial, f"{prefix}.{k}")
         return OptimConfig(**resolved)
 
-class OptunaStudy(BaseModel):
+
+class OptunaStudyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     study_name: str = "optuna_study"
-    direction: Literal["minimize","maximize"] = Field(default = "minimize")
-    n_trials: int = Field(default = 1, ge = 1)
+    direction: Literal["minimize", "maximize"] = Field(default="minimize")
+    n_trials: int = Field(default=1, ge=1)
     storage: str | Path = "sqlite:///optuna.db"
 
-class DataloaderConfig(BaseModel): 
+
+class DataloaderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     data_path: str | Path = "/home/luke-padmore/Source/flow-matching-mnist/data"
-    batch_size: int = Field(default = 64, ge = 1)
-    num_workers: int  = Field(default = 0, ge = 0)
-    transform: transforms.Compose = default_transform
-    num_workers: int  = Field(default = 0, ge = 0, le = 4)
+    batch_size: int = Field(default=64, ge=1)
+    num_workers: int = Field(default=0, ge=0)
+    transform: str = "default"
+    num_workers: int = Field(default=0, ge=0, le=4)
     shuffle: bool = True
+
 
 class HPTYaml(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    optuna_study: OptunaStudy = Field(default_factory=OptunaStudy)
+    opt_study_cfg: OptunaStudyConfig = Field(
+        default_factory=OptunaStudyConfig, alias="study"
+    )
+    dl_cfg: DataloaderConfig = Field(
+        default_factory=DataloaderConfig, alias="dataloader"
+    )
     unet: UNetHPT = Field(default_factory=UNetHPT)
     optim: OptimHPT = Field(default_factory=OptimHPT)
 
