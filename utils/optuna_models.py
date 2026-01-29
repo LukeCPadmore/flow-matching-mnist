@@ -157,3 +157,6 @@ class HPTYaml(BaseModel):
     optuna_study: OptunaStudy = Field(default_factory=OptunaStudy)
     unet: UNetHPT = Field(default_factory=UNetHPT)
     optim: OptimHPT = Field(default_factory=OptimHPT)
+
+    def sample(self, trial: optuna.Trial) -> tuple[UNetHPT, OptimHPT]:
+        return self.unet.sample(trial), self.optim.sample(trial)

@@ -21,7 +21,6 @@ def _mlflow_value(v: Any, *, seq_sep: str = ",") -> Any:
         # You can choose to raise instead if you want strictness
         return str(dict(v))
 
-    # Most scalars are fine (int/float/bool/str)
     return v
 
 def dataclass_to_mlflow_params(obj: Any, *, prefix: str = "", seq_sep: str = ",") -> dict[str, Any]:
@@ -74,6 +73,9 @@ class UNetConfig:
         if name == "convtranspose":
             return nn.ConvTranspose2d(channels, channels, kernel_size=2, stride=2)
         raise ValueError(f"Unknown upsample {name}")
+    
+    def to_mlflow_params(self, *, prefix: str = "unet") -> dict[str, Any]:
+        return dataclass_to_mlflow_params(self, prefix=prefix)
 
 
 
@@ -123,5 +125,7 @@ class OptimConfig:
         if prefix:
             return {f"{prefix}.{k}": v for k, v in p.items()}
         return p
-
+    
+    def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
+        return dataclass_to_mlflow_params(self, prefix=prefix)
 
