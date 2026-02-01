@@ -9,6 +9,7 @@ OptimName = Literal["adam", "adamw", "sgd"]
 ActivationName = Literal["relu", "silu", "gelu"]
 UpsampleMode = Literal["nearest", "bilinear", "convtranspose"]
 
+
 def _mlflow_value(v: Any, *, seq_sep: str = ",") -> Any:
     """Convert a value into something MLflow log_params can handle nicely."""
     if v is None:
@@ -23,7 +24,10 @@ def _mlflow_value(v: Any, *, seq_sep: str = ",") -> Any:
 
     return v
 
-def dataclass_to_mlflow_params(obj: Any, *, prefix: str = "", seq_sep: str = ",") -> dict[str, Any]:
+
+def dataclass_to_mlflow_params(
+    obj: Any, *, prefix: str = "", seq_sep: str = ","
+) -> dict[str, Any]:
     if not is_dataclass(obj):
         raise TypeError(f"Expected dataclass instance, got {type(obj)}")
 
@@ -37,10 +41,14 @@ def dataclass_to_mlflow_params(obj: Any, *, prefix: str = "", seq_sep: str = ","
         return {f"{prefix}.{k}": v for k, v in out.items()}
     return out
 
+
 @dataclass(frozen=True)
 class UNetConfig:
     # architecture
-    channels: Tuple[int, ...]
+    in_channels: int = 1
+    base_channels: int = 16
+    mult: float = 2  # e.g. 16 -> 32 in next layer with
+    n_layers: int = 3
     d_trunk: int = 32
     d_concat: int = 8
     group_norm_size: int = 8
@@ -50,7 +58,7 @@ class UNetConfig:
     max_time_period: float = 10000.0
 
     # Upsampling and activation function
-    activation: ActivationName = "silu"
+    activation_name: ActivationName = "silu"
     upsample_mode: UpsampleMode = "nearest"
 
     @classmethod
@@ -73,10 +81,60 @@ class UNetConfig:
         if name == "convtranspose":
             return nn.ConvTranspose2d(channels, channels, kernel_size=2, stride=2)
         raise ValueError(f"Unknown upsample {name}")
-    
+
+    @classmethod
+    def make_channels(
+        in_ch: int, base: int, mult: float, num_layers: int
+    ) -> tuple[int, ...]:
+        chans = [in_ch]
+        c = base
+        for _ in range(num_layers):
+            chans.append(int(round(c)))
+            c *= mult
+        return tuple(chans)
+
+    @property
+    def channels(self) -> tuple[int, ...]:
+        return self.make_channels(
+            in_ch=self.in_channels,
+            base=self.base_channels,
+            mult=self.mult,
+            num_layers=self.n_layers,
+        )
+
+    @property
+    def activation_cls(self) -> nn.Module:
+        return UNetConfig.make_activation(self.activation_name)
+
+    @classmethod
+    def _check_groupnorm(cls, C: int, g: int, where: str) -> None:
+        if g <= 0:
+            raise ValueError(f"{where}: group_norm_size must be > 0")
+        if C <= 0:
+            raise ValueError(f"{where}: num_channels must be > 0")
+        if g > C:
+            raise ValueError(f"{where}: group_norm_size ({g}) > num_channels ({C})")
+        if C % g != 0:
+            raise ValueError(f"{where}: {C} % {g} != 0")
+
+    def __post_init__(self):
+        g = self.group_norm_size
+        chans = self.channels
+
+        for level in range(1, len(chans)):
+            in_ch = chans[level]
+            out_ch = chans[level]  # or whatever you set for that block
+
+            UNetConfig._check_groupnorm(
+                in_ch + self.d_concat, g, f"downblock preconv level {level}"
+            )
+            UNetConfig._check_groupnorm(
+                2 * in_ch + self.d_concat, g, f"upblock preconv level {level}"
+            )
+            UNetConfig._check_groupnorm(out_ch, g, f"postconv level {level}")
+
     def to_mlflow_params(self, *, prefix: str = "unet") -> dict[str, Any]:
         return dataclass_to_mlflow_params(self, prefix=prefix)
-
 
 
 @dataclass(frozen=True)
@@ -125,7 +183,6 @@ class OptimConfig:
         if prefix:
             return {f"{prefix}.{k}": v for k, v in p.items()}
         return p
-    
+
     def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
         return dataclass_to_mlflow_params(self, prefix=prefix)
-

@@ -68,6 +68,7 @@ class IntSpec(BaseModel):
         )
 
 
+# Can't use tuple/array as not serialisable?
 class CategoricalSpec(BaseModel):
     type: Literal["categorical"]
     choices: List[Any]
@@ -76,11 +77,19 @@ class CategoricalSpec(BaseModel):
     def _check_choices(self):
         if len(self.choices) == 0:
             raise ValueError("categorical spec requires non-empty choices")
+        norm = [tuple(x) if isinstance(x, list) else x for x in self.choices]
+        seen = set()
+        deduped = []
+        for x in norm:
+            if x not in seen:
+                seen.add(x)
+                deduped.append(x)
+
+        self.choices = deduped
         return self
 
     def sample(self, trial: optuna.Trial, name: str) -> float:
-        opts = [tuple(x) if isinstance(x, list) else x for x in self.choices]
-        return trial.suggest_categorical(name, opts)
+        return trial.suggest_categorical(name, self.choices)
 
 
 SearchSpec = FloatSpec | IntSpec | CategoricalSpec

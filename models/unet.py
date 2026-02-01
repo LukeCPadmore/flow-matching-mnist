@@ -11,18 +11,18 @@ class SinusoidalTimeEmbedding(nn.Module):
         embedding_dim: int = 128,
         trunk_dim: int = 32,
         max_period: float = 10000.0,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         super().__init__()
         assert embedding_dim % 2 == 0, "Use an even embedding dimension."
         self.embedding_dim = embedding_dim
         self.log_max_period = math.log(max_period)
 
-        act = activation if activation is not None else nn.SiLU
+        act_cls = activation_cls if activation_cls is not None else nn.SiLU
 
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim, trunk_dim),
-            act(),
+            act_cls(),
             nn.Linear(trunk_dim, trunk_dim),
         )
 
@@ -48,13 +48,15 @@ class SimpleClassConditioning(nn.Module):
         cls_dim,
         embedding_dim,
         trunk_dim,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         super().__init__()
         self.cond_emb = nn.Embedding(cls_dim, embedding_dim)
-        act = activation if activation else nn.SiLU
+        act_cls = activation_cls if activation_cls else nn.SiLU
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, trunk_dim), act(), nn.Linear(trunk_dim, trunk_dim)
+            nn.Linear(embedding_dim, trunk_dim),
+            act_cls(),
+            nn.Linear(trunk_dim, trunk_dim),
         )
 
     def forward(self, cls_idx):
@@ -70,7 +72,7 @@ class ConvDownblock(nn.Module):
         d_trunk,
         d_concat,
         group_norm_size=8,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         """
         Deciding to use stride in order to downsample instead of maxpooling
@@ -78,7 +80,7 @@ class ConvDownblock(nn.Module):
         super().__init__()
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
-        act = activation if activation is not None else nn.SiLU
+        act_cls = activation_cls if activation_cls is not None else nn.SiLU
         self.conv = nn.Sequential(
             nn.GroupNorm(self.group_norm_size, in_channels + self.d_concat),
             nn.Conv2d(
@@ -89,7 +91,7 @@ class ConvDownblock(nn.Module):
                 stride=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
             nn.GroupNorm(self.group_norm_size, out_channels),
             nn.Conv2d(
                 out_channels,
@@ -99,7 +101,7 @@ class ConvDownblock(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
         )
         self.down = nn.Sequential(
             nn.GroupNorm(self.group_norm_size, out_channels),
@@ -111,7 +113,7 @@ class ConvDownblock(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat)
 
@@ -138,7 +140,7 @@ class ConvUpblock(nn.Module):
         d_concat,
         group_norm_size=8,
         upsample_mode="nearest",
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         """
         Note input will be sized (B,2*in_channels + d_concat,H,W)
@@ -147,7 +149,7 @@ class ConvUpblock(nn.Module):
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
         self.upsampler = UNetConfig.make_upsample(upsample_mode, in_channels)
-        act = activation if activation else nn.SiLU
+        act_cls = activation_cls if activation_cls else nn.SiLU
         self.block = nn.Sequential(
             nn.GroupNorm(self.group_norm_size, 2 * in_channels + self.d_concat),
             nn.Conv2d(
@@ -158,7 +160,7 @@ class ConvUpblock(nn.Module):
                 stride=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
             nn.GroupNorm(self.group_norm_size, out_channels),
             nn.Conv2d(
                 out_channels,
@@ -168,7 +170,7 @@ class ConvUpblock(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat)
 
@@ -198,7 +200,7 @@ class Encoder(nn.Module):
         d_trunk,
         d_concat,
         group_norm_size=8,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         """
         For each channel create DownConvblock with in_channels = channel[i] and out_channels = channels[i+1]
@@ -222,7 +224,7 @@ class Encoder(nn.Module):
                     d_trunk,
                     d_concat,
                     group_norm_size=group_norm_size,
-                    activation=activation,
+                    activation_cls=activation_cls,
                 )
                 for in_channels, out_channels in zip(
                     self.channels[:-1], self.channels[1:]
@@ -250,7 +252,7 @@ class Decoder(nn.Module):
         d_concat,
         group_norm_size=8,
         upsample_mode="nearest",
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         """
         Expects list of channels with the same orders as te encoder
@@ -269,7 +271,7 @@ class Decoder(nn.Module):
                     d_concat,
                     group_norm_size=group_norm_size,
                     upsample_mode=upsample_mode,
-                    activation=activation,
+                    activation_cls=activation_cls,
                 )
                 for in_channels, out_channels in zip(
                     self.channels[:-1], self.channels[1:]
@@ -295,7 +297,7 @@ class Bottleneck(nn.Module):
         d_trunk,
         d_concat,
         group_norm_size=8,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
     ):
         """
         Uses similar architecture to ConvDownblock but doesn't use stride = 2 to halve image size
@@ -304,7 +306,7 @@ class Bottleneck(nn.Module):
         self.channels = channels
         self.d_trunk = d_trunk
         self.d_concat = d_concat
-        act = activation if activation else nn.SiLU
+        act_cls = activation_cls if activation_cls else nn.SiLU
         self.bottleneck = nn.Sequential(
             nn.GroupNorm(group_norm_size, self.channels + self.d_concat),
             nn.Conv2d(
@@ -315,7 +317,7 @@ class Bottleneck(nn.Module):
                 stride=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
             nn.GroupNorm(group_norm_size, self.channels),
             nn.Conv2d(
                 self.channels,
@@ -325,7 +327,7 @@ class Bottleneck(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            act(),
+            act_cls(),
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat, bias=False)
 
@@ -350,13 +352,13 @@ class UNet(nn.Module):
         group_norm_size=8,
         d_time=128,
         max_time_period=10000.0,
-        activation: type[nn.Module] | None = None,
+        activation_cls: type[nn.Module] | None = None,
         upsample_mode="nearest",
     ):
         super().__init__()
         self.channels = list(channels)
         self.encoder = Encoder(
-            channels, d_trunk, d_concat, group_norm_size, activation=activation
+            channels, d_trunk, d_concat, group_norm_size, activation_cls=activation_cls
         )
         self.decoder = Decoder(
             channels,
@@ -364,21 +366,21 @@ class UNet(nn.Module):
             d_concat,
             group_norm_size,
             upsample_mode=upsample_mode,
-            activation=activation,
+            activation_cls=activation_cls,
         )
         self.bottleneck = Bottleneck(
             self.channels[-1],
             d_trunk,
             2 * d_concat,
             group_norm_size,
-            activation=activation,
+            activation_cls=activation_cls,
         )
 
         self.time_embedding_mlp = SinusoidalTimeEmbedding(
             embedding_dim=d_time,
             trunk_dim=d_trunk,
             max_period=max_time_period,
-            activation=activation,
+            activation_cls=activation_cls,
         )
 
     def forward(self, x, t, *args, **kwargs) -> torch.Tensor:
@@ -397,7 +399,7 @@ class UNet(nn.Module):
             group_norm_size=cfg.group_norm_size,
             d_time=cfg.d_time,
             max_time_period=cfg.max_time_period,
-            activation=UNetConfig.make_activation(cfg.activation),
+            activation_cls=cfg.activation_cls,
             upsample_mode=cfg.upsample_mode,
         )
 
