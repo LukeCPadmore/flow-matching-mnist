@@ -2,7 +2,7 @@ study:
   study_name: "smoke-test"
   direction: "minimize"
   storage: "sqlite:///optuna.db"
-  n_trials: 1
+  n_trials: 100
 
 dataloader:
   batch_size: 64
@@ -23,14 +23,14 @@ unet:
       type: int
       low: 2
       high: 5
-    base: 
+    base_channels: 
       type: int
       low: 16
       high: 64
       step: 16
     d_time:
       type: categorical
-      choices: [64, 128, 256]
+      choices: [32, 64, 128]
     activation_name:
       type: categorical
       choices: [silu, relu, gelu]

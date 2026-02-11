@@ -8,6 +8,11 @@ from utils.create_dataloaders import default_transform
 from models.config import UNetConfig, OptimConfig
 
 
+def log_pydantic_config_kv(cfg: BaseModel, logger, *, prefix: str = "cfg"):
+    for k, v in cfg.model_dump().items():
+        logger.info("%s.%s = %s", prefix, k, v)
+
+
 class FloatSpec(BaseModel):
     type: Literal["float"]
     low: float
@@ -173,3 +178,9 @@ class HPTYaml(BaseModel):
 
     def sample(self, trial: optuna.Trial) -> tuple[UNetHPT, OptimHPT]:
         return self.unet.sample(trial), self.optim.sample(trial)
+
+    def log_config(self, logger) -> None:
+        log_pydantic_config_kv(self.opt_study_cfg, logger, prefix="optuna_study")
+        log_pydantic_config_kv(self.dl_cfg, logger, "dl")
+        log_pydantic_config_kv(self.unet, logger, "unet")
+        log_pydantic_config_kv(self.optim, logger, "optim")

@@ -10,6 +10,7 @@ from models.unet import UNet
 from utils.create_dataloaders import create_mnist_train_val_loaders, build_transform
 from utils.logger_utils import trial_logger
 from utils.optuna_models import HPTYaml
+from models.config import log_config_kv
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -40,7 +41,6 @@ def make_objective(
 
     def objective(trial: optuna.Trial) -> float:
         unet_cfg, optim_cfg = hpt.sample(trial)
-
         model = UNet.from_config(unet_cfg).to(device)
         optim = optim_cfg.make_optimizer(model.parameters())
 
@@ -50,7 +50,8 @@ def make_objective(
             trial_logger(run_name) as logger,
         ):
             logger.info(f"Starting trial {trial.number}")
-
+            log_config_kv(unet_cfg, logger, prefix="unet")
+            log_config_kv(optim_cfg, logger, prefix="optim")
             # useful tags
             mlflow.set_tag("optuna.trial_number", trial.number)
             mlflow.set_tag("study_name", experiment_name)

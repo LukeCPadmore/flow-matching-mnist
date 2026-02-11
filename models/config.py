@@ -1,9 +1,10 @@
-from dataclasses import dataclass, is_dataclass, fields
+from dataclasses import dataclass, is_dataclass, fields, asdict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Tuple, Literal, Mapping, Any, Sequence
 import torch.nn as nn
 import torch.optim
 import optuna
+
 
 OptimName = Literal["adam", "adamw", "sgd"]
 ActivationName = Literal["relu", "silu", "gelu"]
@@ -53,6 +54,11 @@ class UNetConfig:
     d_concat: int = 8
     group_norm_size: int = 8
 
+    # Linear increaseing dropout in enconder, max dropout in bottleneck and linearly decreasing dropout in decoder
+    dropout_enc_dec_min: float = 0
+    dropout_enc_dec_max: float = 0
+    dropout_bottleneck: float = 0
+
     # time embedding params
     d_time: int = 128
     max_time_period: float = 10000.0
@@ -60,6 +66,15 @@ class UNetConfig:
     # Upsampling and activation function
     activation_name: ActivationName = "silu"
     upsample_mode: UpsampleMode = "nearest"
+
+    @classmethod
+    def make_dropout(
+        cls, dropout_min: float, dropout_max: float, n_layers
+    ) -> list[float]:
+        return [
+            dropout_min + i * ((dropout_max - dropout_min) / n_layers)
+            for i in range(n_layers)
+        ]
 
     @classmethod
     def make_activation(cls, name: ActivationName) -> type[nn.Module]:
@@ -84,7 +99,7 @@ class UNetConfig:
 
     @classmethod
     def make_channels(
-        in_ch: int, base: int, mult: float, num_layers: int
+        cls, in_ch: int, base: int, mult: float, num_layers: int
     ) -> tuple[int, ...]:
         chans = [in_ch]
         c = base
@@ -96,10 +111,16 @@ class UNetConfig:
     @property
     def channels(self) -> tuple[int, ...]:
         return self.make_channels(
-            in_ch=self.in_channels,
-            base=self.base_channels,
-            mult=self.mult,
-            num_layers=self.n_layers,
+            in_ch=int(self.in_channels),
+            base=int(self.base_channels),
+            mult=float(self.mult),
+            num_layers=int(self.n_layers),
+        )
+
+    @property
+    def dropout_enc_dec_list(self) -> list[float]:
+        return UNetConfig.make_dropout(
+            self.dropout_enc_dec_min, self.dropout_enc_dec_max, self.n_layers
         )
 
     @property
@@ -117,6 +138,27 @@ class UNetConfig:
         if C % g != 0:
             raise ValueError(f"{where}: {C} % {g} != 0")
 
+    @classmethod
+    def _check_dropout(
+        cls, dropout_enc_dec_min, dropout_enc_dec_max, dropout_bottleneck
+    ) -> None:
+        if dropout_enc_dec_min < 0 or dropout_enc_dec_min >= 1.0:
+            raise ValueError(
+                f"Encoder-Decoder min dropout must be 0 <= p <= 1, curently set to p = {dropout_enc_dec_min}"
+            )
+        if dropout_enc_dec_max < 0 or dropout_enc_dec_max >= 1.0:
+            raise ValueError(
+                f"Encoder-Decoder max dropout must be 0 <= p <= 1, curently set to p = {dropout_enc_dec_min}"
+            )
+        if dropout_bottleneck < 0 or dropout_bottleneck >= 1.0:
+            raise ValueError(
+                f"Bottleneck dropout must be 0 <= p <= 1, curently set to p = {dropout_enc_dec_min}"
+            )
+        if dropout_enc_dec_min > dropout_enc_dec_max:
+            raise ValueError(
+                f"Encoder-Decoder min dropout (currently {dropout_enc_dec_min}) must smaller than max dropout (currently {dropout_enc_dec_max})"
+            )
+
     def __post_init__(self):
         g = self.group_norm_size
         chans = self.channels
@@ -132,6 +174,10 @@ class UNetConfig:
                 2 * in_ch + self.d_concat, g, f"upblock preconv level {level}"
             )
             UNetConfig._check_groupnorm(out_ch, g, f"postconv level {level}")
+
+        UNetConfig._check_dropout(
+            self.dropout_enc_dec_min, self.dropout_enc_dec_max, self.dropout_bottleneck
+        )
 
     def to_mlflow_params(self, *, prefix: str = "unet") -> dict[str, Any]:
         return dataclass_to_mlflow_params(self, prefix=prefix)
@@ -166,23 +212,9 @@ class OptimConfig:
         raise ValueError(f"Unknown optimiser {self.name}")
 
     def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
-        p = {
-            "name": self.name,
-            "lr": float(self.lr),
-            "weight_decay": float(self.weight_decay),
-        }
-        # if self.name in ("adam", "adamw"):
-        #     p.update({
-        #         "beta1": self.beta1,
-        #         "beta2": self.beta2,
-        #     })
-
-        # if self.name == "sgd":
-        #     p["momentum"] = self.momentum
-
-        if prefix:
-            return {f"{prefix}.{k}": v for k, v in p.items()}
-        return p
-
-    def to_mlflow_params(self, *, prefix: str = "optim") -> dict[str, Any]:
         return dataclass_to_mlflow_params(self, prefix=prefix)
+
+
+def log_config_kv(cfg: UNetConfig | OptimConfig, logger, *, prefix: str = "unet"):
+    for k, v in asdict(cfg).items():
+        logger.info("%s.%s = %s", prefix, k, v)

@@ -64,6 +64,60 @@ class SimpleClassConditioning(nn.Module):
         return self.mlp(cls_embedding)
 
 
+def conv_gn_act(
+    in_ch: int,
+    out_ch: int,
+    *,
+    groups: int,
+    act_cls: nn.Module,
+    kernel_size=3,
+    stride: int = 1,
+    bias: bool = False,
+    padding: int = 1,
+    p_drop: float = 0.0,
+) -> list[nn.Module]:
+    """
+    Pre-activation block: GN -> Act -> Conv -> (optional Dropout2d)
+    """
+    layers: list[nn.Module] = [
+        nn.GroupNorm(groups, in_ch),
+        act_cls(),
+        nn.Conv2d(
+            in_ch,
+            out_ch,
+            kernel_size=kernel_size,
+            padding=padding,
+            stride=stride,
+            bias=bias,
+        ),
+    ]
+    if p_drop > 0:
+        layers.append(nn.Dropout2d(p_drop))
+    return layers
+
+
+def two_conv_block(
+    in_ch: int,
+    mid_ch: int,
+    out_ch: int,
+    *,
+    groups: int,
+    act_cls: nn.Module,
+    p_drop: float = 0.0,
+) -> nn.Sequential:
+    """
+    Two 3x3 convs with pre-activation and optional dropout after each conv.
+    """
+    layers: list[nn.Module] = []
+    layers += conv_gn_act(
+        in_ch, mid_ch, groups=groups, act_cls=act_cls, stride=1, p_drop=p_drop
+    )
+    layers += conv_gn_act(
+        mid_ch, out_ch, groups=groups, act_cls=act_cls, stride=1, p_drop=p_drop
+    )
+    return nn.Sequential(*layers)
+
+
 class ConvDownblock(nn.Module):
     def __init__(
         self,
@@ -73,6 +127,7 @@ class ConvDownblock(nn.Module):
         d_concat,
         group_norm_size=8,
         activation_cls: type[nn.Module] | None = None,
+        p_drop=0,
     ):
         """
         Deciding to use stride in order to downsample instead of maxpooling
@@ -81,39 +136,26 @@ class ConvDownblock(nn.Module):
         self.d_concat = d_concat
         self.group_norm_size = group_norm_size
         act_cls = activation_cls if activation_cls is not None else nn.SiLU
-        self.conv = nn.Sequential(
-            nn.GroupNorm(self.group_norm_size, in_channels + self.d_concat),
-            nn.Conv2d(
-                in_channels + self.d_concat,
-                out_channels,
-                kernel_size=3,
-                padding=1,
-                stride=1,
-                bias=False,
-            ),
-            act_cls(),
-            nn.GroupNorm(self.group_norm_size, out_channels),
-            nn.Conv2d(
-                out_channels,
-                out_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False,
-            ),
-            act_cls(),
+
+        self.conv = two_conv_block(
+            in_ch=in_channels + d_concat,
+            mid_ch=out_channels,
+            out_ch=out_channels,
+            groups=group_norm_size,
+            act_cls=act_cls,
+            p_drop=p_drop,
         )
+
+        # downsample conv (stride=2)
         self.down = nn.Sequential(
-            nn.GroupNorm(self.group_norm_size, out_channels),
-            nn.Conv2d(
-                out_channels,
-                out_channels,
-                kernel_size=3,
+            *conv_gn_act(
+                in_ch=out_channels,
+                out_ch=out_channels,
+                groups=group_norm_size,
+                act_cls=act_cls,
                 stride=2,
-                padding=1,
-                bias=False,
-            ),
-            act_cls(),
+                p_drop=p_drop,
+            )
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat)
 
@@ -141,6 +183,7 @@ class ConvUpblock(nn.Module):
         group_norm_size=8,
         upsample_mode="nearest",
         activation_cls: type[nn.Module] | None = None,
+        p_drop=0,
     ):
         """
         Note input will be sized (B,2*in_channels + d_concat,H,W)
@@ -150,27 +193,13 @@ class ConvUpblock(nn.Module):
         self.group_norm_size = group_norm_size
         self.upsampler = UNetConfig.make_upsample(upsample_mode, in_channels)
         act_cls = activation_cls if activation_cls else nn.SiLU
-        self.block = nn.Sequential(
-            nn.GroupNorm(self.group_norm_size, 2 * in_channels + self.d_concat),
-            nn.Conv2d(
-                2 * in_channels + self.d_concat,
-                out_channels,
-                kernel_size=3,
-                padding=1,
-                stride=1,
-                bias=False,
-            ),
-            act_cls(),
-            nn.GroupNorm(self.group_norm_size, out_channels),
-            nn.Conv2d(
-                out_channels,
-                out_channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False,
-            ),
-            act_cls(),
+        self.conv = two_conv_block(
+            in_ch=2 * in_channels + d_concat,
+            mid_ch=out_channels,
+            out_ch=out_channels,
+            groups=group_norm_size,
+            act_cls=act_cls,
+            p_drop=p_drop,
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat)
 
@@ -190,7 +219,7 @@ class ConvUpblock(nn.Module):
         # Concat x, skip features and time embeddings
         x = torch.cat([x, skip_features, time_emb], dim=1)
         # Pass through block
-        return self.block(x)
+        return self.conv(x)
 
 
 class Encoder(nn.Module):
@@ -201,6 +230,7 @@ class Encoder(nn.Module):
         d_concat,
         group_norm_size=8,
         activation_cls: type[nn.Module] | None = None,
+        dropout_enc_list=None,
     ):
         """
         For each channel create DownConvblock with in_channels = channel[i] and out_channels = channels[i+1]
@@ -215,6 +245,7 @@ class Encoder(nn.Module):
             padding=1,
             stride=1,
         )
+        dropout_enc_list = dropout_enc_list or [0] * (len(self.channels) - 1)
         self.channels[0] = self.channels[1]
         self.down_blocks = nn.ModuleList(
             [
@@ -225,9 +256,10 @@ class Encoder(nn.Module):
                     d_concat,
                     group_norm_size=group_norm_size,
                     activation_cls=activation_cls,
+                    p_drop=p_drop,
                 )
-                for in_channels, out_channels in zip(
-                    self.channels[:-1], self.channels[1:]
+                for in_channels, out_channels, p_drop in zip(
+                    self.channels[:-1], self.channels[1:], dropout_enc_list
                 )
             ]
         )
@@ -298,6 +330,7 @@ class Bottleneck(nn.Module):
         d_concat,
         group_norm_size=8,
         activation_cls: type[nn.Module] | None = None,
+        p_drop=0,
     ):
         """
         Uses similar architecture to ConvDownblock but doesn't use stride = 2 to halve image size
@@ -307,27 +340,14 @@ class Bottleneck(nn.Module):
         self.d_trunk = d_trunk
         self.d_concat = d_concat
         act_cls = activation_cls if activation_cls else nn.SiLU
-        self.bottleneck = nn.Sequential(
-            nn.GroupNorm(group_norm_size, self.channels + self.d_concat),
-            nn.Conv2d(
-                self.channels + self.d_concat,
-                self.channels,
-                kernel_size=3,
-                padding=1,
-                stride=1,
-                bias=False,
-            ),
-            act_cls(),
-            nn.GroupNorm(group_norm_size, self.channels),
-            nn.Conv2d(
-                self.channels,
-                self.channels,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=False,
-            ),
-            act_cls(),
+
+        self.bottleneck = two_conv_block(
+            in_ch=channels + d_concat,
+            mid_ch=channels,
+            out_ch=channels,
+            groups=group_norm_size,
+            act_cls=act_cls,
+            p_drop=p_drop,
         )
         self.time_emb_mlp = nn.Linear(d_trunk, d_concat, bias=False)
 
@@ -354,11 +374,18 @@ class UNet(nn.Module):
         max_time_period=10000.0,
         activation_cls: type[nn.Module] | None = None,
         upsample_mode="nearest",
+        dropout_enc_dec_list=[],
+        dropout_bottleneck=0,
     ):
         super().__init__()
         self.channels = list(channels)
         self.encoder = Encoder(
-            channels, d_trunk, d_concat, group_norm_size, activation_cls=activation_cls
+            channels,
+            d_trunk,
+            d_concat,
+            group_norm_size,
+            activation_cls=activation_cls,
+            dropout_enc_list=dropout_enc_dec_list,
         )
         self.decoder = Decoder(
             channels,
@@ -367,6 +394,7 @@ class UNet(nn.Module):
             group_norm_size,
             upsample_mode=upsample_mode,
             activation_cls=activation_cls,
+            dropout_dec_list=dropout_enc_dec_list[::-1],
         )
         self.bottleneck = Bottleneck(
             self.channels[-1],
@@ -374,6 +402,7 @@ class UNet(nn.Module):
             2 * d_concat,
             group_norm_size,
             activation_cls=activation_cls,
+            p_drop=dropout_bottleneck,
         )
 
         self.time_embedding_mlp = SinusoidalTimeEmbedding(
@@ -401,6 +430,8 @@ class UNet(nn.Module):
             max_time_period=cfg.max_time_period,
             activation_cls=cfg.activation_cls,
             upsample_mode=cfg.upsample_mode,
+            dropout_enc_dedt=cfg.enc_dec_dropout_list,
+            dropout_bottleneck=cfg.dropout_bottleneck,
         )
 
 
