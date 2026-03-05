@@ -29,7 +29,7 @@ def compute_fid_stats(backbone: nn.Module,testloader:DataLoader):
     mu = embs.mean(axis=0)
     sigma = np.cov(embs, rowvar=False)
 
-    return mu, sigma
+    return mu, sigma, embs
 
 def create_fid_backbone(fid_classifier) -> nn.Module:
     convs, clf = fid_classifier.children()
@@ -122,17 +122,19 @@ def train(
         backbone = create_fid_backbone(model)
 
         # Create fid stats and save artifacts
-        mu, sigma = compute_fid_stats(backbone,valloader)
+        mu, sigma, real_embs = compute_fid_stats(backbone,valloader)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             stats_path = os.path.join(tmpdir, "real_stats.npz")
+            real_embs_path = os.path.join(tmpdir, "real_embeddings.npz")
             np.savez(stats_path, mu=mu, sigma=sigma)
+            np.savez(real_embs_path, embs=real_embs)
 
             # Log backbone and bundle stats with the model
             mlflow.pytorch.log_model(
                 backbone,
                 artifact_path="fid_backbone",
-                extra_files=[stats_path],
+                extra_files=[stats_path, real_embs_path],
             )
 
         mlflow.log_artifact(log_path, artifact_path="logs")

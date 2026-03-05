@@ -285,6 +285,7 @@ class Decoder(nn.Module):
         group_norm_size=8,
         upsample_mode="nearest",
         activation_cls: type[nn.Module] | None = None,
+        dropout_dec_list=None,
     ):
         """
         Expects list of channels with the same orders as te encoder
@@ -294,6 +295,7 @@ class Decoder(nn.Module):
         self.out_channels = chls.pop(0)
         self.channels = chls[::-1]
         self.channels.append(self.channels[-1])
+        dropout_dec_list = dropout_dec_list or [0] * (len(self.channels) - 1)
         self.up_blocks = nn.ModuleList(
             [
                 ConvUpblock(
@@ -304,9 +306,10 @@ class Decoder(nn.Module):
                     group_norm_size=group_norm_size,
                     upsample_mode=upsample_mode,
                     activation_cls=activation_cls,
+                    p_drop=p_drop,
                 )
-                for in_channels, out_channels in zip(
-                    self.channels[:-1], self.channels[1:]
+                for in_channels, out_channels, p_drop in zip(
+                    self.channels[:-1], self.channels[1:], dropout_dec_list
                 )
             ]
         )
@@ -430,7 +433,7 @@ class UNet(nn.Module):
             max_time_period=cfg.max_time_period,
             activation_cls=cfg.activation_cls,
             upsample_mode=cfg.upsample_mode,
-            dropout_enc_dedt=cfg.enc_dec_dropout_list,
+            dropout_enc_dec_list=cfg.dropout_enc_dec_list,
             dropout_bottleneck=cfg.dropout_bottleneck,
         )
 

@@ -52,14 +52,31 @@ def calc_fid(mu_real, sigma_real, mu_gen, sigma_gen, eps=1e-6) -> float:
     return float(fid)
 
 @torch.no_grad()
+def extract_embeddings_from_loader(*, backbone, dataloader, device):
+    embs = []
+    backbone.eval()
+    for batch in dataloader:
+        x = batch[0] if isinstance(batch, (tuple, list)) else batch
+        x = x.to(device)
+        z = backbone(x)
+        z = z.view(z.size(0), -1)
+        embs.append(z.detach().cpu().numpy())
+    if not embs:
+        raise ValueError("dataloader produced no batches")
+    return np.concatenate(embs, axis=0)
+
+
+@torch.no_grad()
 def evaluate_fid_with_registered_backbone(
     *,
     sample_fn,
     device,
     backbone_uri: str = "models:/fid_backbone/latest", 
     stats_filename: str = "real_stats.npz",    
+    real_embeddings_filename: str = "real_embeddings.npz",
     n_samples: int = 5210,
-    batch_size: int = 128
+    batch_size: int = 128,
+    real_loader=None,
 ):
 
     # load backbone model
@@ -78,9 +95,18 @@ def evaluate_fid_with_registered_backbone(
     stats = np.load(stats_path)
     mu_real = stats["mu"]
     sigma_real = stats["sigma"]
+    real_embs = None
+
+    real_embs_path = model_dir / "extra_files" / real_embeddings_filename
+    if real_embs_path.exists():
+        real_embs = np.load(real_embs_path)["embs"]
+    elif real_loader is not None:
+        real_embs = extract_embeddings_from_loader(
+            backbone=backbone, dataloader=real_loader, device=device
+        )
 
     # Generate samples 
-    embs = []
+    gen_embs = []
     remaining = n_samples
     while remaining > 0:
         b = min(batch_size, remaining)
@@ -90,14 +116,13 @@ def evaluate_fid_with_registered_backbone(
 
         z = backbone(imgs)
         z = z.view(z.size(0), -1)  # ensure (B, D)
-        embs.append(z.detach().cpu().numpy())
+        gen_embs.append(z.detach().cpu().numpy())
         remaining -= b
 
-    embs = np.concatenate(embs, axis=0)
-    mu_fake = embs.mean(axis=0)
-    sigma_fake = np.cov(embs, rowvar=False)
+    gen_embs = np.concatenate(gen_embs, axis=0)
+    mu_fake = gen_embs.mean(axis=0)
+    sigma_fake = np.cov(gen_embs, rowvar=False)
 
     fid = calc_fid(mu_fake, sigma_fake, mu_real, sigma_real)
     
-    return float(fid), embs
-
+    return float(fid), gen_embs, real_embs

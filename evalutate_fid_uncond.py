@@ -4,8 +4,8 @@ import torch
 import numpy as np
 import tempfile
 import os
+import json
 
-from models.ode_solvers import get_ode_solver_from_name
 from utils.mlflow_tracking_utils import get_run_param, parse_int_list
 from utils.FID.fid_evaluation import evaluate_fid_with_registered_backbone
 from models.ode_solvers import get_ode_solver_from_name, make_vf_uncond, create_samples
@@ -15,9 +15,12 @@ def run_eval(
     generator_name = "UNet",
     backbone_uri: str = "models:/fid_backbone/latest",
     stats_filename: str = "real_stats.npz",
+    real_embeddings_filename: str = "real_embeddings.npz",
     n_samples: int = 5210,
     device = "cuda",
-    seed:int | None = None) -> None:
+    seed:int | None = None,
+    export_path: str | None = None,
+    real_loader=None):
 
     if seed:
         torch.manual_seed(seed)
@@ -46,10 +49,15 @@ def run_eval(
     mlflow.set_experiment("FM-uncond-eval")
     with mlflow.start_run(run_name = run_name):
 
-        fid, embs = evaluate_fid_with_registered_backbone(
+        fid, gen_embs, real_embs = evaluate_fid_with_registered_backbone(
             sample_fn = sample_fn,
             device = device, 
-            n_samples = n_samples
+            backbone_uri=backbone_uri,
+            stats_filename=stats_filename,
+            real_embeddings_filename=real_embeddings_filename,
+            n_samples = n_samples,
+            batch_size=batch_size,
+            real_loader=real_loader,
         )
         mlflow.log_metric("fid", float(fid))
         mlflow.log_params({
@@ -60,9 +68,29 @@ def run_eval(
             "seed": seed
         })
         with tempfile.TemporaryDirectory() as tmpdir:
-            emb_path = os.path.join(tmpdir, "embeddings.npz")
-            np.savez(emb_path,embs=embs)
-            mlflow.log_artifact(emb_path)
+            gen_path = os.path.join(tmpdir, "generated_embeddings.npz")
+            np.savez(gen_path, embs=gen_embs)
+            mlflow.log_artifact(gen_path)
+
+            if real_embs is not None:
+                real_path = os.path.join(tmpdir, "real_embeddings.npz")
+                np.savez(real_path, embs=real_embs)
+                mlflow.log_artifact(real_path)
+
+            fid_path = os.path.join(tmpdir, "fid.json")
+            with open(fid_path, "w", encoding="utf-8") as f:
+                json.dump({"fid": float(fid)}, f)
+            mlflow.log_artifact(fid_path)
+
+        if export_path is not None:
+            os.makedirs(export_path, exist_ok=True)
+            np.savez(os.path.join(export_path, "generated_embeddings.npz"), embs=gen_embs)
+            if real_embs is not None:
+                np.savez(os.path.join(export_path, "real_embeddings.npz"), embs=real_embs)
+            with open(os.path.join(export_path, "fid_eval_fid.json"), "w", encoding="utf-8") as f:
+                json.dump({"fid": float(fid)}, f)
+
+        return float(fid), gen_embs, real_embs
         
 
 if __name__ == "__main__":
