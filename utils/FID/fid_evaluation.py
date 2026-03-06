@@ -3,6 +3,7 @@ from scipy.linalg import sqrtm
 import mlflow
 import torch
 from pathlib import Path 
+from tqdm import tqdm
 
 def calc_fid(mu_real, sigma_real, mu_gen, sigma_gen, eps=1e-6) -> float:
 
@@ -77,6 +78,7 @@ def evaluate_fid_with_registered_backbone(
     n_samples: int = 5210,
     batch_size: int = 128,
     real_loader=None,
+    show_progress: bool = True,
 ):
 
     # load backbone model
@@ -108,6 +110,7 @@ def evaluate_fid_with_registered_backbone(
     # Generate samples 
     gen_embs = []
     remaining = n_samples
+    pbar = tqdm(total=n_samples, desc="Generating embeddings", disable=not show_progress)
     while remaining > 0:
         b = min(batch_size, remaining)
         imgs = sample_fn(b)
@@ -118,6 +121,8 @@ def evaluate_fid_with_registered_backbone(
         z = z.view(z.size(0), -1)  # ensure (B, D)
         gen_embs.append(z.detach().cpu().numpy())
         remaining -= b
+        pbar.update(b)
+    pbar.close()
 
     gen_embs = np.concatenate(gen_embs, axis=0)
     mu_fake = gen_embs.mean(axis=0)

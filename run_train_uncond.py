@@ -12,8 +12,12 @@ from utils.train import train_loop_uncond
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train unconditional FM UNet on MNIST.")
-    parser.add_argument("--experiment-name", default="Flow Matching MNIST Unconditional")
+    parser = argparse.ArgumentParser(
+        description="Train unconditional FM UNet on MNIST."
+    )
+    parser.add_argument(
+        "--experiment-name", default="Flow Matching MNIST Unconditional"
+    )
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -33,13 +37,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-norm-size", type=int, default=8)
     parser.add_argument("--d-time", type=int, default=128)
     parser.add_argument("--max-time-period", type=float, default=10000.0)
-    parser.add_argument("--activation-name", default="silu", choices=["relu", "silu", "gelu"])
+    parser.add_argument(
+        "--activation-name", default="silu", choices=["relu", "silu", "gelu"]
+    )
     parser.add_argument(
         "--upsample-mode",
         default="nearest",
         choices=["nearest", "bilinear", "convtranspose"],
     )
-    parser.add_argument("--optim-name", default="adamw", choices=["adam", "adamw", "sgd"])
+    parser.add_argument(
+        "--optim-name", default="adamw", choices=["adam", "adamw", "sgd"]
+    )
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     return parser.parse_args()
@@ -78,7 +86,9 @@ def main() -> None:
     optim = optim_cfg.make_optimizer(model.parameters())
 
     mlflow.set_experiment(args.experiment_name)
-    run_name = args.run_name or f"train_uncond_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    run_name = (
+        args.run_name or f"train_uncond_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    )
     with mlflow.start_run(run_name=run_name):
         mlflow.log_params(unet_cfg.to_mlflow_params(prefix="unet"))
         mlflow.log_params(optim_cfg.to_mlflow_params(prefix="optim"))
@@ -109,7 +119,7 @@ def main() -> None:
         )
 
         mlflow.log_metric("best_mse", float(best))
-        mlflow.pytorch.log_model(model, artifact_path="UNet")
+        mlflow.pytorch.log_model(model, name="UNet")
 
 
 if __name__ == "__main__":

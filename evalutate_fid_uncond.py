@@ -17,22 +17,33 @@ def run_eval(
     stats_filename: str = "real_stats.npz",
     real_embeddings_filename: str = "real_embeddings.npz",
     n_samples: int = 5210,
+    ode_solver_name: str | None = None,
+    image_shape: list[int] | tuple[int, ...] | None = None,
+    ode_steps: int | None = None,
+    batch_size: int | None = None,
     device = "cuda",
     seed:int | None = None,
     export_path: str | None = None,
-    real_loader=None):
+    real_loader=None,
+    show_progress: bool = True):
 
     if seed:
         torch.manual_seed(seed)
     device = torch.device(device if (device != "cuda" or torch.cuda.is_available()) else "cpu")
 
     generator = mlflow.pytorch.load_model(f"runs:/{generator_run_id}/{generator_name}").to(device).eval()
-    ode_solver = get_ode_solver_from_name(get_run_param(generator_run_id,"ode_solver"))
+    if ode_solver_name is None:
+        ode_solver_name = get_run_param(generator_run_id, "ode_solver")
+    ode_solver = get_ode_solver_from_name(ode_solver_name)
     f = make_vf_uncond(generator)
-    ode_solver = get_ode_solver_from_name(get_run_param(generator_run_id,"ode_solver"))
-    image_shape = parse_int_list(get_run_param(generator_run_id,"image_shape"))
-    ode_steps = int(get_run_param(generator_run_id,"ode_steps"))
-    batch_size = int(get_run_param(generator_run_id,"batch_size"))
+    if image_shape is None:
+        image_shape = parse_int_list(get_run_param(generator_run_id, "image_shape"))
+    else:
+        image_shape = list(image_shape)
+    if ode_steps is None:
+        ode_steps = int(get_run_param(generator_run_id, "ode_steps"))
+    if batch_size is None:
+        batch_size = int(get_run_param(generator_run_id, "batch_size"))
 
 
     sample_fn = partial(
@@ -58,6 +69,7 @@ def run_eval(
             n_samples = n_samples,
             batch_size=batch_size,
             real_loader=real_loader,
+            show_progress=show_progress,
         )
         mlflow.log_metric("fid", float(fid))
         mlflow.log_params({
